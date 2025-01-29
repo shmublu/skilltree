@@ -23,45 +23,45 @@ class UniqueIDGenerator:
         UniqueIDGenerator.counters[alias] += 1
         return this_id
 
+
 ##############################################################################
 # Base PlotObject
 ##############################################################################
+
 class PlotObject:
-    """
-    Each object is fully responsible for:
-      1) Generating its geometry (and its children's geometry).
-      2) Printing skill paths in correct order.
-      3) Rendering itself (or delegating to children).
-    """
     ALIAS = "PlotObject"
 
     def __init__(self):
         self.obj_id = UniqueIDGenerator.get_unique_id(self.ALIAS)
         self.sub_references = []
 
-    # ---------------------------
-    # Random geometry assignment
-    # ---------------------------
     def assign_geometry(self):
         for child in self.sub_references:
             child.assign_geometry()
 
-    # ---------------------------
-    # Skills logic
-    # ---------------------------
     def perform_skills(self):
         for child in self.sub_references:
             child.perform_skills()
 
-    # ---------------------------
-    # Rendering
-    # ---------------------------
     def render(self, ax):
         for child in self.sub_references:
             child.render(ax)
 
     def __repr__(self):
         return f"{self.ALIAS}#{self.obj_id}"
+
+    # ---------------------------
+    # New standardized positioning
+    # ---------------------------
+    def set_bottom_left(self, x, y, angle=0, **kwargs):
+        """
+        Default implementation does nothing, overridden by subclasses.
+        `x` and `y` define the bottom-left position for angle=0,
+        and `angle` is in degrees.
+        """
+        pass
+
+
 
 ##############################################################################
 # Low-Level: Line
@@ -108,6 +108,21 @@ class LineLow(PlotObject):
         ax.plot([self.p1[0], self.p2[0]],
                 [self.p1[1], self.p2[1]],
                 color='k', lw=2)
+
+    # ---------------------------
+    # New standardized positioning
+    # ---------------------------
+    def set_bottom_left(self, x, y, angle=0, length=10, **kwargs):
+        """
+        For a line, interpret (x, y) as the bottom-left endpoint when angle=0.
+        Then rotate this line by `angle` degrees and use `length`.
+        """
+        rad = math.radians(angle)
+        self.p1 = (x, y)
+        # The 'bottom-left' for angle=0 means the line goes horizontally to the right
+        self.p2 = (x + length * math.cos(rad), y + length * math.sin(rad))
+        self._geometry_locked = True
+
 
 ##############################################################################
 # Low-Level: Oval
@@ -157,6 +172,29 @@ class OvalLow(PlotObject):
                     facecolor='none',
                     lw=2)
         ax.add_patch(e)
+
+    # ---------------------------
+    # New standardized positioning
+    # ---------------------------
+    def set_bottom_left(self, x, y, angle=0, width=10, height=10, **kwargs):
+        """
+        Interprets (x, y) as the bottom-left corner if angle=0.
+        Then sets the center accordingly and applies rotation `angle`.
+        """
+        # Bottom-left corner -> center is offset by half-width, half-height
+        rad = math.radians(angle)
+        # The offset for the center when angle=0
+        offset_x = width / 2.0
+        offset_y = height / 2.0
+        # Rotate that offset around the bottom-left corner
+        rotated_cx = x + offset_x * math.cos(rad) - offset_y * math.sin(rad)
+        rotated_cy = y + offset_x * math.sin(rad) + offset_y * math.cos(rad)
+        self.center = (rotated_cx, rotated_cy)
+        self.width = width
+        self.height = height
+        self.angle = angle
+        self._geometry_locked = True
+
 
 ##############################################################################
 # Rectangle (with 4 lines)
@@ -230,6 +268,26 @@ class RectangleObj(PlotObject):
         for sub in self.sub_references:
             sub.render(ax)
 
+    # ---------------------------
+    # New standardized positioning
+    # ---------------------------
+    def set_bottom_left(self, x, y, angle=0, width=10, height=10, **kwargs):
+        """
+        Interprets (x, y) as the bottom-left corner when angle=0.
+        Sets center, width, height, and angle.
+        """
+        self.width = width
+        self.height = height
+        self.angle = angle
+        rad = math.radians(angle)
+        # Offset from bottom-left to center
+        offset_x = width / 2.0
+        offset_y = height / 2.0
+        rotated_cx = x + offset_x * math.cos(rad) - offset_y * math.sin(rad)
+        rotated_cy = y + offset_x * math.sin(rad) + offset_y * math.cos(rad)
+        self.center = (rotated_cx, rotated_cy)
+        self._geometry_locked = True
+
 ##############################################################################
 # Bars (multiple rectangles)
 ##############################################################################
@@ -273,28 +331,22 @@ class BarsObj(PlotObject):
                 base_y = random.uniform(50, 80)
 
             angle_rad = math.radians(self.angle)
-            # Use max_width + spacing for offset
             delta_x = (self.max_width + self.spacing) * math.cos(angle_rad)
             delta_y = (self.max_width + self.spacing) * math.sin(angle_rad)
 
             current_x = base_x
             current_y = base_y
-
             for rect in self.bars_list:
                 rect.width = random.uniform(self.min_width, self.max_width)
                 rect.height = random.uniform(self.min_height, self.max_height)
-
-                # The rectangle center is set so the bottom edge aligns with "current" position
-                # by placing the rectangle center half the height above current_x/y.
-                rect.center = (
-                    current_x + rect.width / 2.0 * math.cos(angle_rad),
-                    current_y + rect.width / 2.0 * math.sin(angle_rad)
-                    - rect.height / 2.0
-                )
                 rect.angle = self.angle
-                rect._geometry_locked = True
-
-                # Move to the next bar position
+                # Instead of setting rect.center directly, we use set_bottom_left
+                rect.set_bottom_left(
+                    current_x, current_y,
+                    angle=self.angle,
+                    width=rect.width,
+                    height=rect.height
+                )
                 current_x += delta_x
                 current_y += delta_y
 
@@ -317,6 +369,21 @@ class BarsObj(PlotObject):
         for sub in self.sub_references:
             sub.render(ax)
 
+    # ---------------------------
+    # New standardized positioning
+    # ---------------------------
+    def set_bottom_left(self, x, y, angle=0, **kwargs):
+        """
+        Interprets (x, y) as a reference for the bottom-left of this entire bars set.
+        For demonstration, we'll shift base_position to (x, y) and reassign geometry.
+        """
+        self.base_position = (x, y)
+        self.angle = angle
+        self._geometry_locked = False
+
+##############################################################################
+# Axis
+##############################################################################
 class AxisObj(PlotObject):
     ALIAS = "Axis"
 
@@ -365,7 +432,6 @@ class AxisObj(PlotObject):
             self.line.p2 = self.p2
             self.line._geometry_locked = True
 
-            # Create ticks
             tick_start = 0.0
             while tick_start < self.axis_length:
                 spacing = random.uniform(self.min_tick_spacing, self.max_tick_spacing)
@@ -400,32 +466,38 @@ class AxisObj(PlotObject):
         for tline in self.ticks:
             tline.render(ax)
 
+    # ---------------------------
+    # New standardized positioning
+    # ---------------------------
+    def set_bottom_left(self, x, y, angle=0, axis_length=50, **kwargs):
+        """
+        Interprets (x, y) as the bottom-left start of the axis (when angle=0, the axis extends horizontally).
+        """
+        self.start_position = (x, y)
+        self.axis_angle = angle
+        self.axis_length = axis_length
+        self._geometry_locked = False
+
+
+##############################################################################
+# BarGraph
+##############################################################################
 class BarGraphObj(PlotObject):
     ALIAS = "BarGraph"
 
     def __init__(
         self,
-        axis_start=None,
+        base_position=None,
         axis_length=None,
         bars_num=None,
-        bars_angle=None,
-        with_y_axis=False,
-        axis_margin=0,  # <--- Added margin for slight offset
+        bars_angle=0,
+        with_y_axis=True,
+        axis_margin=0,
         **kwargs
     ):
-        """
-        :param axis_start: Where the bars (and axis) begin.
-        :param axis_length: How long the axis is.
-        :param bars_num: Number of bars to create.
-        :param bars_angle: Angle of the bars (the x-axis will match this).
-        :param with_y_axis: Whether to include a perpendicular y-axis.
-        :param axis_margin: Offset to place the axis below the bars (0 = inline).
-        """
         super().__init__()
-
-        # Default random assignments if none are provided
-        if axis_start is None:
-            axis_start = (random.uniform(10, 30), random.uniform(50, 80))
+        if base_position is None:
+            base_position = (random.uniform(10, 30), random.uniform(50, 80))
         if axis_length is None:
             axis_length = random.uniform(40, 60)
         if bars_num is None:
@@ -433,34 +505,26 @@ class BarGraphObj(PlotObject):
         if bars_angle is None:
             bars_angle = random.uniform(0, 180)
 
-        self.axis_start = axis_start
+        self.base_position = base_position
         self.axis_length = axis_length
         self.bars_num = bars_num
         self.bars_angle = bars_angle
         self.with_y_axis = with_y_axis
         self.axis_margin = axis_margin
+        self._geometry_locked = False
 
-        # Create bars object
         self.bars_obj = BarsObj(
             num_bars=self.bars_num,
             angle=self.bars_angle,
-            base_position=self.axis_start,
+            base_position=self.base_position,
             **kwargs
         )
         self.sub_references.append(self.bars_obj)
 
-        # Compute an offset so the axis can sit slightly below the bars
-        # "Below" is determined by rotating the angle by -90 degrees
-        # so that 'margin' is perpendicular to the bars' orientation.
-        angle_rad = math.radians(self.bars_angle - 90)
-        offset_x = self.axis_margin * math.cos(angle_rad)
-        offset_y = self.axis_margin * math.sin(angle_rad)
+        rad_offset = math.radians(self.bars_angle - 90)
+        ax_start_x = self.base_position[0] + self.axis_margin * math.cos(rad_offset)
+        ax_start_y = self.base_position[1] + self.axis_margin * math.sin(rad_offset)
 
-        # Actual start position for the axis
-        ax_start_x = self.axis_start[0] + offset_x
-        ax_start_y = self.axis_start[1] + offset_y
-
-        # Create the main X-axis in line with bars_angle
         self.axis_obj_x = AxisObj(
             start_position=(ax_start_x, ax_start_y),
             axis_length=self.axis_length,
@@ -468,43 +532,33 @@ class BarGraphObj(PlotObject):
         )
         self.sub_references.append(self.axis_obj_x)
 
-        # If with_y_axis, create a perpendicular Y-axis at angle+90
         if self.with_y_axis:
             self.axis_obj_y = AxisObj(
                 start_position=(ax_start_x, ax_start_y),
                 axis_length=self.axis_length,
-                axis_angle=(self.bars_angle + 90) % 360
+                axis_angle=((self.bars_angle + 90) % 360)
             )
             self.sub_references.append(self.axis_obj_y)
         else:
             self.axis_obj_y = None
 
-        self._geometry_locked = False
-
     def assign_geometry(self):
         if not self._geometry_locked:
-            # Allow sub-objects to compute their geometry
             self.bars_obj._geometry_locked = False
             self.axis_obj_x._geometry_locked = False
             if self.axis_obj_y:
                 self.axis_obj_y._geometry_locked = False
 
-            # Assign the bars geometry first
-            self.bars_obj.assign_geometry()
-
-            # Assign the X-axis geometry
             self.axis_obj_x.assign_geometry()
-
-            # If there is a Y-axis, assign its geometry
             if self.axis_obj_y:
                 self.axis_obj_y.assign_geometry()
 
+            self.bars_obj.assign_geometry()
             self._geometry_locked = True
 
         super().assign_geometry()
 
     def perform_skills(self):
-        self.bars_obj.perform_skills()
         self.axis_obj_x.perform_skills()
         if self.axis_obj_y:
             self.axis_obj_y.perform_skills()
@@ -512,6 +566,7 @@ class BarGraphObj(PlotObject):
         else:
             print(f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id}]")
 
+        self.bars_obj.perform_skills()
         print(f"GroupBars => BarGraph#{self.obj_id} from BarsIDs=[{self.bars_obj.obj_id}]")
         print(f"RecognizeInstanceBarGraph => BarGraph#{self.obj_id}")
         print(f"LocalizeBarGraph => BarGraph#{self.obj_id} (Overall bounding region, etc.)")
@@ -520,6 +575,19 @@ class BarGraphObj(PlotObject):
     def render(self, ax):
         for sub in self.sub_references:
             sub.render(ax)
+
+    # ---------------------------
+    # New standardized positioning
+    # ---------------------------
+    def set_bottom_left(self, x, y, angle=0, axis_length=50, bars_num=2, **kwargs):
+        """
+        Interprets (x, y) as the bottom-left of the bar graph (with angle=0 meaning bars go horizontal).
+        """
+        self.base_position = (x, y)
+        self.bars_angle = angle
+        self.axis_length = axis_length
+        self.bars_num = bars_num
+        self._geometry_locked = False
 
 ##############################################################################
 # Build a scene from skill graph plan
