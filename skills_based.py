@@ -24,6 +24,45 @@ class UniqueIDGenerator:
         return this_id
 
 
+
+
+QUESTIONS = {
+    "Object": [
+        "Is there an <object type> in the image?",
+        "Is there a <shape type> that is rotated <more | less> than <n> degrees?",
+        "Does an <object type 1> intersect with an <object type 2>?",  
+        "Is there an <object type 1> completely inside of an <object type 2>?",
+    ],
+    "Line": [
+        "Are there any parallel lines in the image?",
+        "Are there any perpendicular lines in the image?"
+        "Could any two line segments be part of a longer line?",
+    ],
+    "Shape": [
+            #triangle, oval, rectangle, polygon are shapes
+        "Does <shape1> have a <larger | lower> area than <shape2> in this image?",
+        "Are there any shapes with <greater| lesser> than <n> sides?",
+        "Does <shape1> have <greater| lesser> perimeter than <shape2>?",
+        "Does the <leftmost | rightmost |topmost | bottommost> <shape type> have <greater| lesser> area than the <leftmost | rightmost |topmost | bottommost> <shape type>?"
+    ],
+    
+    "Oval": [
+        "Is there a circle in the image?"
+    ],
+    "Rectangle": [
+        "Is a square present?"
+    ],
+    "Triangle": [
+        "Are there any right triangles in the image?",
+        "Are there any equilateral triangles in the image?"
+    ],
+    "Arrow": [
+        "Is there an arrow pointing to <object type>?",
+        "Are there any arrows pointing <upward | downward | leftward| ?"
+    ],
+    # do not do higher level objects
+}
+
 ##############################################################################
 # Base PlotObject
 ##############################################################################
@@ -287,6 +326,235 @@ class RectangleObj(PlotObject):
         rotated_cy = y + offset_x * math.sin(rad) + offset_y * math.cos(rad)
         self.center = (rotated_cx, rotated_cy)
         self._geometry_locked = True
+
+#####
+class TriangleObj(PlotObject):
+    ALIAS = "Triangle"
+
+    def __init__(self, vertices=None):
+        """
+        Initialize a triangle with optional vertices.
+        If `vertices` is None, a random triangle will be generated.
+        """
+        super().__init__()
+        if vertices is not None and len(vertices) == 3:
+            self.vertices = vertices
+            self._geometry_locked = True
+        else:
+            self.vertices = [(0, 0), (0, 0), (0, 0)]
+            self._geometry_locked = False
+
+        for _ in range(3):
+            line = LineLow()
+            self.sub_references.append(line)
+
+    def assign_geometry(self):
+        if not hasattr(self, "_geometry_locked") or not self._geometry_locked:
+            # Generate random vertices for the triangle
+            x1, y1 = random.uniform(20, 80), random.uniform(20, 80)
+            x2, y2 = x1 + random.uniform(10, 30), y1 + random.uniform(-20, 20)
+            x3, y3 = x1 + random.uniform(-20, 20), y1 + random.uniform(10, 30)
+            self.vertices = [(x1, y1), (x2, y2), (x3, y3)]
+
+        # Assign lines to connect the vertices
+        lines = [ln for ln in self.sub_references if isinstance(ln, LineLow)]
+        if len(lines) == 3:
+            for i in range(3):
+                lines[i].p1 = self.vertices[i]
+                lines[i].p2 = self.vertices[(i + 1) % 3]
+                lines[i]._geometry_locked = True
+        super().assign_geometry()
+
+    def perform_skills(self):
+        for sub in self.sub_references:
+            sub.perform_skills()
+        line_ids = [sub.obj_id for sub in self.sub_references if isinstance(sub, LineLow)]
+        if line_ids:
+            print(f"GroupLine => Triangle#{self.obj_id} from lineIDs={line_ids}")
+        print(f"RecognizeInstanceTriangle => Triangle#{self.obj_id}")
+        print(f"LocalizeTriangle => Triangle#{self.obj_id} (Vertices={self.vertices})")
+        # Calculate area using the shoelace formula
+        x1, y1 = self.vertices[0]
+        x2, y2 = self.vertices[1]
+        x3, y3 = self.vertices[2]
+        area = abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0
+        print(f"MeasureTriangle => Triangle#{self.obj_id} (Area={area:.1f})")
+
+    def render(self, ax):
+        for sub in self.sub_references:
+            sub.render(ax)
+
+    def set_bottom_left(self, x, y, **kwargs):
+        """
+        Define the bottom-left vertex and adjust other vertices accordingly.
+        This method assumes the triangle is defined relative to the first vertex.
+        """
+        dx = kwargs.get("dx", 10)
+        dy = kwargs.get("dy", 10)
+        angle = kwargs.get("angle", 0)
+
+        # Define the vertices relative to the bottom-left corner
+        rad = math.radians(angle)
+        v1 = (x, y)
+        v2 = (x + dx * math.cos(rad), y + dx * math.sin(rad))
+        v3 = (x + dy * math.cos(rad + math.pi / 4), y + dy * math.sin(rad + math.pi / 4))
+        
+        self.vertices = [v1, v2, v3]
+        self._geometry_locked = True
+
+
+##############################################################################
+# New: Polygon (with N lines)
+##############################################################################
+class PolygonObj(PlotObject):
+    ALIAS = "Polygon"
+
+    def __init__(self, center=None, sides=None, radius=None, angle=None):
+        super().__init__()
+        if center is not None and sides is not None and radius is not None and angle is not None:
+            self.center = center
+            self.sides = sides
+            self.radius = radius
+            self.angle = angle
+            self._geometry_locked = True
+        else:
+            self.center = (0, 0)
+            self.sides = 3
+            self.radius = 0
+            self.angle = 0
+        for _ in range(10):  
+            # Initialize a pool of lines; we will only use 'sides' of them
+            line = LineLow()
+            self.sub_references.append(line)
+
+    def assign_geometry(self):
+        if not hasattr(self, "_geometry_locked") or not self._geometry_locked:
+            self.center = (random.uniform(30, 70), random.uniform(30, 70))
+            self.sides = random.randint(3, 6)  
+            self.radius = random.uniform(10, 20)
+            self.angle = random.uniform(0, 180)
+        angle_step = 360.0 / self.sides
+        corners = []
+        for i in range(self.sides):
+            theta = math.radians(self.angle + i * angle_step)
+            px = self.center[0] + self.radius * math.cos(theta)
+            py = self.center[1] + self.radius * math.sin(theta)
+            corners.append((px, py))
+        lines = [ln for ln in self.sub_references if isinstance(ln, LineLow)]
+        if len(lines) >= self.sides:
+            for i in range(self.sides):
+                lines[i].p1 = corners[i]
+                lines[i].p2 = corners[(i + 1) % self.sides]
+                lines[i]._geometry_locked = True
+            # If extra lines exist, just lock them with minimal geometry
+            for j in range(self.sides, len(lines)):
+                lines[j].p1 = (0, 0)
+                lines[j].p2 = (0, 0)
+                lines[j]._geometry_locked = True
+        super().assign_geometry()
+
+    def perform_skills(self):
+        used_lines = [sub for sub in self.sub_references[:self.sides] if isinstance(sub, LineLow)]
+        for ln in used_lines:
+            ln.perform_skills()
+        line_ids = [ln.obj_id for ln in used_lines]
+        if line_ids:
+            print(f"GroupLine => Polygon#{self.obj_id} from lineIDs={line_ids}")
+        print(f"RecognizeInstancePolygon => Polygon#{self.obj_id}")
+        print(f"LocalizePolygon => Polygon#{self.obj_id} (Sides={self.sides},Angle={self.angle:.1f})")
+        # Approx area if it's a regular polygon
+        area = 0.5 * self.sides * (self.radius ** 2) * math.sin(2 * math.pi / self.sides)
+        print(f"MeasurePolygon => Polygon#{self.obj_id} (Area={area:.1f})")
+
+    def render(self, ax):
+        line_count = self.sides  
+        used_lines = self.sub_references[:line_count]
+        for sub in used_lines:
+            sub.render(ax)
+
+    def set_bottom_left(self, x, y, angle=0, sides=3, radius=10, **kwargs):
+        self.sides = sides
+        self.radius = radius
+        self.angle = angle
+        # For a polygon, interpret bottom-left as if we place one vertex there along angle=0
+        self.center = (x + radius, y)
+        self._geometry_locked = True
+
+
+##############################################################################
+# New: Arrow (with lines forming a main shaft + arrowhead)
+##############################################################################
+class ArrowObj(PlotObject):
+    ALIAS = "Arrow"
+
+    def __init__(self, start=None, length=None, angle=None):
+        super().__init__()
+        if start is not None and length is not None and angle is not None:
+            self.start = start
+            self.length = length
+            self.angle = angle
+            self._geometry_locked = True
+        else:
+            self.start = (0, 0)
+            self.length = 0
+            self.angle = 0
+        # main line + two arrowhead lines
+        for _ in range(3):
+            line = LineLow()
+            self.sub_references.append(line)
+
+    def assign_geometry(self):
+        if not hasattr(self, "_geometry_locked") or not self._geometry_locked:
+            self.start = (random.uniform(20, 30), random.uniform(20, 30))
+            self.length = random.uniform(20, 40)
+            self.angle = random.uniform(0, 180)
+        rad = math.radians(self.angle)
+        x1, y1 = self.start
+        x2 = x1 + self.length * math.cos(rad)
+        y2 = y1 + self.length * math.sin(rad)
+        lines = [ln for ln in self.sub_references if isinstance(ln, LineLow)]
+        if len(lines) == 3:
+            # Main shaft
+            lines[0].p1 = (x1, y1)
+            lines[0].p2 = (x2, y2)
+            lines[0]._geometry_locked = True
+            # Arrowhead lines
+            head_size = self.length * 0.2
+            arrow_angle = 30
+            left_rad = math.radians(self.angle + 180 - arrow_angle)
+            right_rad = math.radians(self.angle + 180 + arrow_angle)
+            lx = x2 + head_size * math.cos(left_rad)
+            ly = y2 + head_size * math.sin(left_rad)
+            rx = x2 + head_size * math.cos(right_rad)
+            ry = y2 + head_size * math.sin(right_rad)
+            lines[1].p1 = (x2, y2)
+            lines[1].p2 = (lx, ly)
+            lines[1]._geometry_locked = True
+            lines[2].p1 = (x2, y2)
+            lines[2].p2 = (rx, ry)
+            lines[2]._geometry_locked = True
+        super().assign_geometry()
+
+    def perform_skills(self):
+        for sub in self.sub_references:
+            sub.perform_skills()
+        line_ids = [sub.obj_id for sub in self.sub_references if isinstance(sub, LineLow)]
+        if line_ids:
+            print(f"GroupLine => Arrow#{self.obj_id} from lineIDs={line_ids}")
+        print(f"RecognizeInstanceArrow => Arrow#{self.obj_id}")
+        print(f"LocalizeArrow => Arrow#{self.obj_id} (Length={self.length:.1f},Angle={self.angle:.1f})")
+        print(f"MeasureArrow => Arrow#{self.obj_id} (ShaftLength={self.length:.1f})")
+
+    def render(self, ax):
+        for sub in self.sub_references:
+            sub.render(ax)
+
+    def set_bottom_left(self, x, y, angle=0, length=20, **kwargs):
+        self.start = (x, y)
+        self.length = length
+        self.angle = angle
+        self._geometry_locked = True
+
 
 ##############################################################################
 # Bars (multiple rectangles)
@@ -599,6 +867,9 @@ OBJECT_TYPES = {
     "Bars": BarsObj,
     "Axis": AxisObj,
     "BarGraph": BarGraphObj,
+    "Triangle": TriangleObj,
+    "Polygon": PolygonObj,
+    "Arrow": ArrowObj,
 }
 
 SKILL_SYNONYMS = {
@@ -730,6 +1001,28 @@ def build_skill_graph():
     add_skill("LineGraph", "Measure", ["LocalizeLineGraph"])
     add_skill("LineGraph", "Group", ["MeasureLineGraph"])
     add_skill("LineGraph", "Count", ["GroupLineGraph"])
+    
+        # Triangle
+    add_skill("Triangle", "RecognizeInstance", ["GroupLine"])
+    add_skill("Triangle", "Localize", ["RecognizeInstanceTriangle"])
+    add_skill("Triangle", "Measure", ["LocalizeTriangle"])
+    add_skill("Triangle", "Group", ["MeasureTriangle"])
+    add_skill("Triangle", "Count", ["GroupTriangle"])
+
+    # Polygon
+    add_skill("Polygon", "RecognizeInstance", ["GroupLine"])
+    add_skill("Polygon", "Localize", ["RecognizeInstancePolygon"])
+    add_skill("Polygon", "Measure", ["LocalizePolygon"])
+    add_skill("Polygon", "Group", ["MeasurePolygon"])
+    add_skill("Polygon", "Count", ["GroupPolygon"])
+
+    # Arrow
+    add_skill("Arrow", "RecognizeInstance", ["GroupLine"])
+    add_skill("Arrow", "Localize", ["RecognizeInstanceArrow"])
+    add_skill("Arrow", "Measure", ["LocalizeArrow"])
+    add_skill("Arrow", "Group", ["MeasureArrow"])
+    add_skill("Arrow", "Count", ["GroupArrow"])
+
 
     for lbl in list(skill_info.keys()):
         link_deps(lbl)
@@ -866,5 +1159,5 @@ def run_skill_demo(skill_label, outdir="output", distractor_skills=None):
 ##############################################################################
 if __name__ == "__main__":
     # Example skill
-    test_skill = "RecognizeInstanceBarGraph"
+    test_skill = "RecognizeInstanceArrow"
     run_skill_demo(test_skill, outdir="demo_output", distractor_skills=[("RecognizeInstanceLine", 10, 0.003)])
