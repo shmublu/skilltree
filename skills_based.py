@@ -1,9 +1,11 @@
 import math
 import random
 import os
+import json
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
+import bisect
 
 # We disable interactive mode and enforce a specific backend for consistency.
 plt.ioff()
@@ -23,50 +25,40 @@ class UniqueIDGenerator:
         UniqueIDGenerator.counters[alias] += 1
         return this_id
 
-
-
-
 QUESTIONS = {
-    "Object": [
-        "Is there an <object type> in the image?",
-        "Is there a <shape type> that is rotated <more | less> than <n> degrees?",
-        "Does an <object type 1> intersect with an <object type 2>?",  
-        "Is there an <object type 1> completely inside of an <object type 2>?",
-    ],
-    "Line": [
-        "Are there any parallel lines in the image?",
-        "Are there any perpendicular lines in the image?"
-        "Could any two line segments be part of a longer line?",
-    ],
-    "Shape": [
-            #triangle, oval, rectangle, polygon are shapes
-        "Does <shape1> have a <larger | lower> area than <shape2> in this image?",
-        "Are there any shapes with <greater| lesser> than <n> sides?",
-        "Does <shape1> have <greater| lesser> perimeter than <shape2>?",
-        "Does the <leftmost | rightmost |topmost | bottommost> <shape type> have <greater| lesser> area than the <leftmost | rightmost |topmost | bottommost> <shape type>?"
-    ],
-    
-    "Oval": [
-        "Is there a circle in the image?"
-    ],
-    "Rectangle": [
-        "Is a square present?"
-    ],
-    "Triangle": [
-        "Are there any right triangles in the image?",
-        "Are there any equilateral triangles in the image?"
-    ],
-    "Arrow": [
-        "Is there an arrow pointing to <object type>?",
-        "Are there any arrows pointing <upward | downward | leftward| ?"
-    ],
-    # do not do higher level objects
+    "Is there an <object type> in the image?": [],
+    "Are there any parallel lines in the image?": [],
+    "Are there any perpendicular lines in the image?": [],
+    "Are there any arrows pointing <upward | downward | leftward | rightward>?": [],
 }
 
 ##############################################################################
-# Base PlotObject
+# Helper functions for angle comparisons and checks
 ##############################################################################
+def angle_difference(a, b):
+    diff = abs(a - b) % 360
+    if diff > 180:
+        diff = 360 - diff
+    return diff
 
+def is_arrow_pointing_direction(arrow, target_direction, tol=5):
+    direction_angles = {"upward": 90, "downward": 270, "leftward": 180, "rightward": 0}
+    target_angle = direction_angles[target_direction]
+    return angle_difference(arrow.angle, target_angle) <= tol
+
+def are_lines_parallel(line1, line2, tol=5):
+    _, a1 = get_line_length_and_angle(line1.p1, line1.p2)
+    _, a2 = get_line_length_and_angle(line2.p1, line2.p2)
+    return angle_difference(a1, a2) <= tol
+
+def are_lines_perpendicular(line1, line2, tol=5):
+    _, a1 = get_line_length_and_angle(line1.p1, line1.p2)
+    _, a2 = get_line_length_and_angle(line2.p1, line2.p2)
+    return abs(angle_difference(a1, a2) - 90) <= tol
+
+##############################################################################
+# Base PlotObject with transformation and bounding-box support
+##############################################################################
 class PlotObject:
     ALIAS = "PlotObject"
 
@@ -89,18 +81,65 @@ class PlotObject:
     def __repr__(self):
         return f"{self.ALIAS}#{self.obj_id}"
 
-    # ---------------------------
-    # New standardized positioning
-    # ---------------------------
     def set_bottom_left(self, x, y, angle=0, **kwargs):
-        """
-        Default implementation does nothing, overridden by subclasses.
-        `x` and `y` define the bottom-left position for angle=0,
-        and `angle` is in degrees.
-        """
+        # To be overridden by subclasses.
         pass
 
+    # Export object structure as a JSON–serializable dict.
+    def to_dict(self):
+        def make_serializable(value):
+            if isinstance(value, (int, float, str, bool)) or value is None:
+                return value
+            elif isinstance(value, (list, tuple)):
+                return [make_serializable(v) for v in value]
+            elif isinstance(value, dict):
+                return {k: make_serializable(v) for k, v in value.items()}
+            elif isinstance(value, PlotObject):
+                return value.to_dict()
+            else:
+                return str(value)
+        data = {"type": self.ALIAS, "obj_id": self.obj_id, "attributes": {}}
+        for key, value in self.__dict__.items():
+            if key.startswith("_") or key == "sub_references":
+                continue
+            data["attributes"][key] = make_serializable(value)
+        if self.sub_references:
+            data["children"] = [child.to_dict() for child in self.sub_references]
+        return data
 
+    # Recursively apply an affine transformation function to all coordinate attributes.
+    def apply_transformation(self, func):
+        for attr in ['p1', 'p2', 'center', 'base_position']:
+            if hasattr(self, attr):
+                value = getattr(self, attr)
+                if value is not None and isinstance(value, tuple) and len(value) == 2:
+                    setattr(self, attr, func(value))
+        if hasattr(self, 'vertices') and self.vertices is not None:
+            self.vertices = [func(v) if v is not None else None for v in self.vertices]
+        for child in self.sub_references:
+            child.apply_transformation(func)
+
+    # Return a bounding box (min_x, min_y, max_x, max_y).
+    def get_bbox(self):
+        if hasattr(self, 'p1') and hasattr(self, 'p2'):
+            return (min(self.p1[0], self.p2[0]),
+                    min(self.p1[1], self.p2[1]),
+                    max(self.p1[0], self.p2[0]),
+                    max(self.p1[1], self.p2[1]))
+        if hasattr(self, 'center') and hasattr(self, 'width') and hasattr(self, 'height'):
+            return (self.center[0] - self.width/2, self.center[1] - self.height/2,
+                    self.center[0] + self.width/2, self.center[1] + self.height/2)
+        if hasattr(self, 'vertices') and self.vertices:
+            xs = [v[0] for v in self.vertices if v is not None]
+            ys = [v[1] for v in self.vertices if v is not None]
+            return (min(xs), min(ys), max(xs), max(ys))
+        bboxes = [child.get_bbox() for child in self.sub_references if hasattr(child, "get_bbox")]
+        if bboxes:
+            return (min(b[0] for b in bboxes),
+                    min(b[1] for b in bboxes),
+                    max(b[2] for b in bboxes),
+                    max(b[3] for b in bboxes))
+        return (0, 0, 0, 0)
 
 ##############################################################################
 # Low-Level: Line
@@ -109,7 +148,7 @@ def get_line_length_and_angle(p1, p2):
     dx = p2[0] - p1[0]
     dy = p2[1] - p1[1]
     length = math.hypot(dx, dy)
-    angle = math.degrees(math.atan2(dy, dx))
+    angle = math.degrees(math.atan2(dy, dx)) % 360
     return (length, angle)
 
 class LineLow(PlotObject):
@@ -141,27 +180,24 @@ class LineLow(PlotObject):
         print(f"RecognizeInstanceLine => Line#{self.obj_id}")
         print(f"LocalizeLine => Line#{self.obj_id} (Endpoints: {self.p1}, {self.p2})")
         length, angle = get_line_length_and_angle(self.p1, self.p2)
-        print(f"MeasureLine => Line#{self.obj_id} (Length={length:.1f},Angle={angle:.1f})")
+        print(f"MeasureLine => Line#{self.obj_id} (Length={length:.1f}, Angle={angle:.1f})")
 
     def render(self, ax):
         ax.plot([self.p1[0], self.p2[0]],
                 [self.p1[1], self.p2[1]],
                 color='k', lw=2)
 
-    # ---------------------------
-    # New standardized positioning
-    # ---------------------------
     def set_bottom_left(self, x, y, angle=0, length=10, **kwargs):
-        """
-        For a line, interpret (x, y) as the bottom-left endpoint when angle=0.
-        Then rotate this line by `angle` degrees and use `length`.
-        """
         rad = math.radians(angle)
         self.p1 = (x, y)
-        # The 'bottom-left' for angle=0 means the line goes horizontally to the right
         self.p2 = (x + length * math.cos(rad), y + length * math.sin(rad))
         self._geometry_locked = True
 
+    def get_bbox(self):
+        return (min(self.p1[0], self.p2[0]),
+                min(self.p1[1], self.p2[1]),
+                max(self.p1[0], self.p2[0]),
+                max(self.p1[1], self.p2[1]))
 
 ##############################################################################
 # Low-Level: Oval
@@ -198,7 +234,7 @@ class OvalLow(PlotObject):
 
     def perform_skills(self):
         print(f"RecognizeInstanceOval => Oval#{self.obj_id}")
-        print(f"LocalizeOval => Oval#{self.obj_id} (Center={self.center},W={self.width},H={self.height},Angle={self.angle:.1f})")
+        print(f"LocalizeOval => Oval#{self.obj_id} (Center={self.center}, W={self.width}, H={self.height}, Angle={self.angle:.1f})")
         area = math.pi * (self.width / 2.0) * (self.height / 2.0)
         print(f"MeasureOval => Oval#{self.obj_id} (Area={area:.1f})")
 
@@ -212,20 +248,10 @@ class OvalLow(PlotObject):
                     lw=2)
         ax.add_patch(e)
 
-    # ---------------------------
-    # New standardized positioning
-    # ---------------------------
     def set_bottom_left(self, x, y, angle=0, width=10, height=10, **kwargs):
-        """
-        Interprets (x, y) as the bottom-left corner if angle=0.
-        Then sets the center accordingly and applies rotation `angle`.
-        """
-        # Bottom-left corner -> center is offset by half-width, half-height
         rad = math.radians(angle)
-        # The offset for the center when angle=0
         offset_x = width / 2.0
         offset_y = height / 2.0
-        # Rotate that offset around the bottom-left corner
         rotated_cx = x + offset_x * math.cos(rad) - offset_y * math.sin(rad)
         rotated_cy = y + offset_x * math.sin(rad) + offset_y * math.cos(rad)
         self.center = (rotated_cx, rotated_cy)
@@ -234,6 +260,11 @@ class OvalLow(PlotObject):
         self.angle = angle
         self._geometry_locked = True
 
+    def get_bbox(self):
+        return (self.center[0] - self.width/2,
+                self.center[1] - self.height/2,
+                self.center[0] + self.width/2,
+                self.center[1] + self.height/2)
 
 ##############################################################################
 # Rectangle (with 4 lines)
@@ -298,28 +329,20 @@ class RectangleObj(PlotObject):
         if line_ids:
             print(f"GroupLine => Rectangle#{self.obj_id} from lineIDs={line_ids}")
         print(f"RecognizeInstanceRectangle => Rectangle#{self.obj_id}")
-        print(f"LocalizeRectangle => Rectangle#{self.obj_id} (W={self.width:.1f},H={self.height:.1f},Angle={self.angle:.1f})")
+        print(f"LocalizeRectangle => Rectangle#{self.obj_id} (W={self.width:.1f}, H={self.height:.1f}, Angle={self.angle:.1f})")
         area = self.width * self.height
         perimeter = 2.0 * (self.width + self.height)
-        print(f"MeasureRectangle => Rectangle#{self.obj_id} (Area={area:.1f},Perimeter={perimeter:.1f})")
+        print(f"MeasureRectangle => Rectangle#{self.obj_id} (Area={area:.1f}, Perimeter={perimeter:.1f})")
 
     def render(self, ax):
         for sub in self.sub_references:
             sub.render(ax)
 
-    # ---------------------------
-    # New standardized positioning
-    # ---------------------------
     def set_bottom_left(self, x, y, angle=0, width=10, height=10, **kwargs):
-        """
-        Interprets (x, y) as the bottom-left corner when angle=0.
-        Sets center, width, height, and angle.
-        """
         self.width = width
         self.height = height
         self.angle = angle
         rad = math.radians(angle)
-        # Offset from bottom-left to center
         offset_x = width / 2.0
         offset_y = height / 2.0
         rotated_cx = x + offset_x * math.cos(rad) - offset_y * math.sin(rad)
@@ -327,15 +350,24 @@ class RectangleObj(PlotObject):
         self.center = (rotated_cx, rotated_cy)
         self._geometry_locked = True
 
-#####
+    def get_bbox(self):
+        bboxes = [line.get_bbox() for line in self.sub_references if isinstance(line, LineLow)]
+        if bboxes:
+            min_x = min(b[0] for b in bboxes)
+            min_y = min(b[1] for b in bboxes)
+            max_x = max(b[2] for b in bboxes)
+            max_y = max(b[3] for b in bboxes)
+            return (min_x, min_y, max_x, max_y)
+        return (self.center[0]-self.width/2, self.center[1]-self.height/2,
+                self.center[0]+self.width/2, self.center[1]+self.height/2)
+
+##############################################################################
+# Triangle
+##############################################################################
 class TriangleObj(PlotObject):
     ALIAS = "Triangle"
 
     def __init__(self, vertices=None):
-        """
-        Initialize a triangle with optional vertices.
-        If `vertices` is None, a random triangle will be generated.
-        """
         super().__init__()
         if vertices is not None and len(vertices) == 3:
             self.vertices = vertices
@@ -343,20 +375,16 @@ class TriangleObj(PlotObject):
         else:
             self.vertices = [(0, 0), (0, 0), (0, 0)]
             self._geometry_locked = False
-
         for _ in range(3):
             line = LineLow()
             self.sub_references.append(line)
 
     def assign_geometry(self):
         if not hasattr(self, "_geometry_locked") or not self._geometry_locked:
-            # Generate random vertices for the triangle
             x1, y1 = random.uniform(20, 80), random.uniform(20, 80)
             x2, y2 = x1 + random.uniform(10, 30), y1 + random.uniform(-20, 20)
             x3, y3 = x1 + random.uniform(-20, 20), y1 + random.uniform(10, 30)
             self.vertices = [(x1, y1), (x2, y2), (x3, y3)]
-
-        # Assign lines to connect the vertices
         lines = [ln for ln in self.sub_references if isinstance(ln, LineLow)]
         if len(lines) == 3:
             for i in range(3):
@@ -368,16 +396,15 @@ class TriangleObj(PlotObject):
     def perform_skills(self):
         for sub in self.sub_references:
             sub.perform_skills()
-        line_ids = [sub.obj_id for sub in self.sub_references if isinstance(sub, LineLow)]
+        line_ids = [line.obj_id for line in self.sub_references if isinstance(line, LineLow)]
         if line_ids:
             print(f"GroupLine => Triangle#{self.obj_id} from lineIDs={line_ids}")
         print(f"RecognizeInstanceTriangle => Triangle#{self.obj_id}")
         print(f"LocalizeTriangle => Triangle#{self.obj_id} (Vertices={self.vertices})")
-        # Calculate area using the shoelace formula
         x1, y1 = self.vertices[0]
         x2, y2 = self.vertices[1]
         x3, y3 = self.vertices[2]
-        area = abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0
+        area = abs(x1*(y2-y3) + x2*(y3-y1) + x3*(y1-y2)) / 2.0
         print(f"MeasureTriangle => Triangle#{self.obj_id} (Area={area:.1f})")
 
     def render(self, ax):
@@ -385,26 +412,23 @@ class TriangleObj(PlotObject):
             sub.render(ax)
 
     def set_bottom_left(self, x, y, **kwargs):
-        """
-        Define the bottom-left vertex and adjust other vertices accordingly.
-        This method assumes the triangle is defined relative to the first vertex.
-        """
         dx = kwargs.get("dx", 10)
         dy = kwargs.get("dy", 10)
         angle = kwargs.get("angle", 0)
-
-        # Define the vertices relative to the bottom-left corner
         rad = math.radians(angle)
         v1 = (x, y)
         v2 = (x + dx * math.cos(rad), y + dx * math.sin(rad))
-        v3 = (x + dy * math.cos(rad + math.pi / 4), y + dy * math.sin(rad + math.pi / 4))
-        
+        v3 = (x + dy * math.cos(rad + math.pi/4), y + dy * math.sin(rad + math.pi/4))
         self.vertices = [v1, v2, v3]
         self._geometry_locked = True
 
+    def get_bbox(self):
+        xs = [v[0] for v in self.vertices if v is not None]
+        ys = [v[1] for v in self.vertices if v is not None]
+        return (min(xs), min(ys), max(xs), max(ys))
 
 ##############################################################################
-# New: Polygon (with N lines)
+# Polygon
 ##############################################################################
 class PolygonObj(PlotObject):
     ALIAS = "Polygon"
@@ -422,15 +446,14 @@ class PolygonObj(PlotObject):
             self.sides = 3
             self.radius = 0
             self.angle = 0
-        for _ in range(10):  
-            # Initialize a pool of lines; we will only use 'sides' of them
+        for _ in range(10):
             line = LineLow()
             self.sub_references.append(line)
 
     def assign_geometry(self):
         if not hasattr(self, "_geometry_locked") or not self._geometry_locked:
             self.center = (random.uniform(30, 70), random.uniform(30, 70))
-            self.sides = random.randint(3, 6)  
+            self.sides = random.randint(3, 6)
             self.radius = random.uniform(10, 20)
             self.angle = random.uniform(0, 180)
         angle_step = 360.0 / self.sides
@@ -446,7 +469,6 @@ class PolygonObj(PlotObject):
                 lines[i].p1 = corners[i]
                 lines[i].p2 = corners[(i + 1) % self.sides]
                 lines[i]._geometry_locked = True
-            # If extra lines exist, just lock them with minimal geometry
             for j in range(self.sides, len(lines)):
                 lines[j].p1 = (0, 0)
                 lines[j].p2 = (0, 0)
@@ -454,20 +476,19 @@ class PolygonObj(PlotObject):
         super().assign_geometry()
 
     def perform_skills(self):
-        used_lines = [sub for sub in self.sub_references[:self.sides] if isinstance(sub, LineLow)]
+        used_lines = [ln for ln in self.sub_references[:self.sides] if isinstance(ln, LineLow)]
         for ln in used_lines:
             ln.perform_skills()
         line_ids = [ln.obj_id for ln in used_lines]
         if line_ids:
             print(f"GroupLine => Polygon#{self.obj_id} from lineIDs={line_ids}")
         print(f"RecognizeInstancePolygon => Polygon#{self.obj_id}")
-        print(f"LocalizePolygon => Polygon#{self.obj_id} (Sides={self.sides},Angle={self.angle:.1f})")
-        # Approx area if it's a regular polygon
-        area = 0.5 * self.sides * (self.radius ** 2) * math.sin(2 * math.pi / self.sides)
+        print(f"LocalizePolygon => Polygon#{self.obj_id} (Sides={self.sides}, Angle={self.angle:.1f})")
+        area = 0.5 * self.sides * (self.radius**2) * math.sin(2*math.pi/self.sides)
         print(f"MeasurePolygon => Polygon#{self.obj_id} (Area={area:.1f})")
 
     def render(self, ax):
-        line_count = self.sides  
+        line_count = self.sides
         used_lines = self.sub_references[:line_count]
         for sub in used_lines:
             sub.render(ax)
@@ -476,19 +497,28 @@ class PolygonObj(PlotObject):
         self.sides = sides
         self.radius = radius
         self.angle = angle
-        # For a polygon, interpret bottom-left as if we place one vertex there along angle=0
         self.center = (x + radius, y)
         self._geometry_locked = True
 
+    def get_bbox(self):
+        angle_step = 360.0 / self.sides
+        xs = []
+        ys = []
+        for i in range(self.sides):
+            theta = math.radians(self.angle + i * angle_step)
+            xs.append(self.center[0] + self.radius * math.cos(theta))
+            ys.append(self.center[1] + self.radius * math.sin(theta))
+        return (min(xs), min(ys), max(xs), max(ys))
 
 ##############################################################################
-# New: Arrow (with lines forming a main shaft + arrowhead)
+# Arrow
 ##############################################################################
 class ArrowObj(PlotObject):
     ALIAS = "Arrow"
 
     def __init__(self, start=None, length=None, angle=None):
         super().__init__()
+        # Accept parameters from constructor if provided.
         if start is not None and length is not None and angle is not None:
             self.start = start
             self.length = length
@@ -498,7 +528,6 @@ class ArrowObj(PlotObject):
             self.start = (0, 0)
             self.length = 0
             self.angle = 0
-        # main line + two arrowhead lines
         for _ in range(3):
             line = LineLow()
             self.sub_references.append(line)
@@ -514,11 +543,9 @@ class ArrowObj(PlotObject):
         y2 = y1 + self.length * math.sin(rad)
         lines = [ln for ln in self.sub_references if isinstance(ln, LineLow)]
         if len(lines) == 3:
-            # Main shaft
             lines[0].p1 = (x1, y1)
             lines[0].p2 = (x2, y2)
             lines[0]._geometry_locked = True
-            # Arrowhead lines
             head_size = self.length * 0.2
             arrow_angle = 30
             left_rad = math.radians(self.angle + 180 - arrow_angle)
@@ -538,12 +565,16 @@ class ArrowObj(PlotObject):
     def perform_skills(self):
         for sub in self.sub_references:
             sub.perform_skills()
-        line_ids = [sub.obj_id for sub in self.sub_references if isinstance(sub, LineLow)]
+        line_ids = [ln.obj_id for ln in self.sub_references if isinstance(ln, LineLow)]
         if line_ids:
             print(f"GroupLine => Arrow#{self.obj_id} from lineIDs={line_ids}")
         print(f"RecognizeInstanceArrow => Arrow#{self.obj_id}")
-        print(f"LocalizeArrow => Arrow#{self.obj_id} (Length={self.length:.1f},Angle={self.angle:.1f})")
+        print(f"LocalizeArrow => Arrow#{self.obj_id} (Length={self.length:.1f}, Angle={self.angle:.1f})")
         print(f"MeasureArrow => Arrow#{self.obj_id} (ShaftLength={self.length:.1f})")
+        rad = math.radians(self.angle)
+        dx = math.cos(rad)
+        dy = math.sin(rad)
+        print(f"ArrowDirection => Arrow#{self.obj_id} (Vector=({dx:.2f}, {dy:.2f}))")
 
     def render(self, ax):
         for sub in self.sub_references:
@@ -555,6 +586,15 @@ class ArrowObj(PlotObject):
         self.angle = angle
         self._geometry_locked = True
 
+    def get_bbox(self):
+        bboxes = [ln.get_bbox() for ln in self.sub_references if isinstance(ln, LineLow)]
+        if bboxes:
+            min_x = min(b[0] for b in bboxes)
+            min_y = min(b[1] for b in bboxes)
+            max_x = max(b[2] for b in bboxes)
+            max_y = max(b[3] for b in bboxes)
+            return (min_x, min_y, max_x, max_y)
+        return (self.start[0], self.start[1], self.start[0]+self.length, self.start[1]+self.length)
 
 ##############################################################################
 # Bars (multiple rectangles)
@@ -562,17 +602,15 @@ class ArrowObj(PlotObject):
 class BarsObj(PlotObject):
     ALIAS = "Bars"
 
-    def __init__(
-        self,
-        num_bars=None,
-        angle=30,
-        min_width=5,
-        max_width=6,
-        spacing=None,
-        min_height=15,
-        max_height=30,
-        base_position=None
-    ):
+    def __init__(self,
+                 num_bars=None,
+                 angle=30,
+                 min_width=5,
+                 max_width=6,
+                 spacing=None,
+                 min_height=15,
+                 max_height=30,
+                 base_position=None):
         super().__init__()
         self.num_bars = num_bars if num_bars else random.randint(2, 5)
         self.angle = angle
@@ -584,7 +622,6 @@ class BarsObj(PlotObject):
         self.base_position = base_position
         self._geometry_locked = False
         self.bars_list = []
-
         for _ in range(self.num_bars):
             rect = RectangleObj()
             self.bars_list.append(rect)
@@ -597,36 +634,25 @@ class BarsObj(PlotObject):
             else:
                 base_x = random.uniform(10, 30)
                 base_y = random.uniform(50, 80)
-
             angle_rad = math.radians(self.angle)
             delta_x = (self.max_width + self.spacing) * math.cos(angle_rad)
             delta_y = (self.max_width + self.spacing) * math.sin(angle_rad)
-
             current_x = base_x
             current_y = base_y
             for rect in self.bars_list:
                 rect.width = random.uniform(self.min_width, self.max_width)
                 rect.height = random.uniform(self.min_height, self.max_height)
                 rect.angle = self.angle
-                # Instead of setting rect.center directly, we use set_bottom_left
-                rect.set_bottom_left(
-                    current_x, current_y,
-                    angle=self.angle,
-                    width=rect.width,
-                    height=rect.height
-                )
+                rect.set_bottom_left(current_x, current_y, angle=self.angle, width=rect.width, height=rect.height)
                 current_x += delta_x
                 current_y += delta_y
-
             self._geometry_locked = True
         super().assign_geometry()
 
     def perform_skills(self):
         for sub in self.sub_references:
             sub.perform_skills()
-        rect_ids = [
-            sub.obj_id for sub in self.sub_references if isinstance(sub, RectangleObj)
-        ]
+        rect_ids = [sub.obj_id for sub in self.sub_references if isinstance(sub, RectangleObj)]
         if rect_ids:
             print(f"GroupRectangle => Bars#{self.obj_id} from rectangleIDs={rect_ids}")
         print(f"RecognizeInstanceBars => Bars#{self.obj_id}")
@@ -637,17 +663,20 @@ class BarsObj(PlotObject):
         for sub in self.sub_references:
             sub.render(ax)
 
-    # ---------------------------
-    # New standardized positioning
-    # ---------------------------
     def set_bottom_left(self, x, y, angle=0, **kwargs):
-        """
-        Interprets (x, y) as a reference for the bottom-left of this entire bars set.
-        For demonstration, we'll shift base_position to (x, y) and reassign geometry.
-        """
         self.base_position = (x, y)
         self.angle = angle
         self._geometry_locked = False
+
+    def get_bbox(self):
+        bboxes = [obj.get_bbox() for obj in self.bars_list]
+        if bboxes:
+            min_x = min(b[0] for b in bboxes)
+            min_y = min(b[1] for b in bboxes)
+            max_x = max(b[2] for b in bboxes)
+            max_y = max(b[3] for b in bboxes)
+            return (min_x, min_y, max_x, max_y)
+        return (0, 0, 0, 0)
 
 ##############################################################################
 # Axis
@@ -655,16 +684,14 @@ class BarsObj(PlotObject):
 class AxisObj(PlotObject):
     ALIAS = "Axis"
 
-    def __init__(
-        self,
-        axis_length=50,
-        axis_angle=30,
-        min_tick_spacing=5,
-        max_tick_spacing=10,
-        min_tick_length=2,
-        max_tick_length=4,
-        start_position=None
-    ):
+    def __init__(self,
+                 axis_length=50,
+                 axis_angle=30,
+                 min_tick_spacing=5,
+                 max_tick_spacing=10,
+                 min_tick_length=2,
+                 max_tick_length=4,
+                 start_position=None):
         super().__init__()
         self.axis_length = axis_length
         self.axis_angle = axis_angle
@@ -687,19 +714,16 @@ class AxisObj(PlotObject):
             else:
                 x1 = random.uniform(10, 20)
                 y1 = random.uniform(60, 80)
-
             rad = math.radians(self.axis_angle)
             dx = self.axis_length * math.cos(rad)
             dy = self.axis_length * math.sin(rad)
             x2 = x1 + dx
             y2 = y1 + dy
-
             self.p1 = (x1, y1)
             self.p2 = (x2, y2)
             self.line.p1 = self.p1
             self.line.p2 = self.p2
             self.line._geometry_locked = True
-
             tick_start = 0.0
             while tick_start < self.axis_length:
                 spacing = random.uniform(self.min_tick_spacing, self.max_tick_spacing)
@@ -710,12 +734,11 @@ class AxisObj(PlotObject):
                 cy = y1 + tick_start * math.sin(rad)
                 tick_len = random.uniform(self.min_tick_length, self.max_tick_length)
                 half_t = tick_len / 2.0
-                rx = half_t * math.cos(rad + math.pi / 2.0)
-                ry = half_t * math.sin(rad + math.pi / 2.0)
+                rx = half_t * math.cos(rad + math.pi/2)
+                ry = half_t * math.sin(rad + math.pi/2)
                 tick_line = LineLow((cx - rx, cy - ry), (cx + rx, cy + ry))
                 self.ticks.append(tick_line)
                 self.sub_references.append(tick_line)
-
             self._geometry_locked = True
         super().assign_geometry()
 
@@ -723,29 +746,29 @@ class AxisObj(PlotObject):
         self.line.perform_skills()
         for tline in self.ticks:
             tline.perform_skills()
-        print(f"GroupLine => Axis#{self.obj_id} from lineIDs=[{self.line.obj_id}" + "".join(f",{t.obj_id}" for t in self.ticks) + "]")
+        print(f"GroupLine => Axis#{self.obj_id} from lineIDs=[{self.line.obj_id}" +
+              "".join(f", {t.obj_id}" for t in self.ticks) + "]")
         print(f"RecognizeInstanceAxis => Axis#{self.obj_id}")
-        print(f"LocalizeAxis => Axis#{self.obj_id} (Endpoints={self.p1},{self.p2})")
+        print(f"LocalizeAxis => Axis#{self.obj_id} (Endpoints={self.p1}, {self.p2})")
         length, angle = get_line_length_and_angle(self.p1, self.p2)
-        print(f"MeasureAxis => Axis#{self.obj_id} (Length={length:.1f},Angle={angle:.1f})")
+        print(f"MeasureAxis => Axis#{self.obj_id} (Length={length:.1f}, Angle={angle:.1f})")
 
     def render(self, ax):
         self.line.render(ax)
         for tline in self.ticks:
             tline.render(ax)
 
-    # ---------------------------
-    # New standardized positioning
-    # ---------------------------
     def set_bottom_left(self, x, y, angle=0, axis_length=50, **kwargs):
-        """
-        Interprets (x, y) as the bottom-left start of the axis (when angle=0, the axis extends horizontally).
-        """
         self.start_position = (x, y)
         self.axis_angle = angle
         self.axis_length = axis_length
         self._geometry_locked = False
 
+    def get_bbox(self):
+        return (min(self.p1[0], self.p2[0]),
+                min(self.p1[1], self.p2[1]),
+                max(self.p1[0], self.p2[0]),
+                max(self.p1[1], self.p2[1]))
 
 ##############################################################################
 # BarGraph
@@ -753,16 +776,14 @@ class AxisObj(PlotObject):
 class BarGraphObj(PlotObject):
     ALIAS = "BarGraph"
 
-    def __init__(
-        self,
-        base_position=None,
-        axis_length=None,
-        bars_num=None,
-        bars_angle=0,
-        with_y_axis=True,
-        axis_margin=0,
-        **kwargs
-    ):
+    def __init__(self,
+                 base_position=None,
+                 axis_length=None,
+                 bars_num=None,
+                 bars_angle=0,
+                 with_y_axis=True,
+                 axis_margin=0,
+                 **kwargs):
         super().__init__()
         if base_position is None:
             base_position = (random.uniform(10, 30), random.uniform(50, 80))
@@ -772,7 +793,6 @@ class BarGraphObj(PlotObject):
             bars_num = random.randint(2, 5)
         if bars_angle is None:
             bars_angle = random.uniform(0, 180)
-
         self.base_position = base_position
         self.axis_length = axis_length
         self.bars_num = bars_num
@@ -780,32 +800,22 @@ class BarGraphObj(PlotObject):
         self.with_y_axis = with_y_axis
         self.axis_margin = axis_margin
         self._geometry_locked = False
-
-        self.bars_obj = BarsObj(
-            num_bars=self.bars_num,
-            angle=self.bars_angle,
-            base_position=self.base_position,
-            **kwargs
-        )
+        self.bars_obj = BarsObj(num_bars=self.bars_num,
+                                angle=self.bars_angle,
+                                base_position=self.base_position,
+                                **kwargs)
         self.sub_references.append(self.bars_obj)
-
         rad_offset = math.radians(self.bars_angle - 90)
         ax_start_x = self.base_position[0] + self.axis_margin * math.cos(rad_offset)
         ax_start_y = self.base_position[1] + self.axis_margin * math.sin(rad_offset)
-
-        self.axis_obj_x = AxisObj(
-            start_position=(ax_start_x, ax_start_y),
-            axis_length=self.axis_length,
-            axis_angle=self.bars_angle
-        )
+        self.axis_obj_x = AxisObj(start_position=(ax_start_x, ax_start_y),
+                                  axis_length=self.axis_length,
+                                  axis_angle=self.bars_angle)
         self.sub_references.append(self.axis_obj_x)
-
         if self.with_y_axis:
-            self.axis_obj_y = AxisObj(
-                start_position=(ax_start_x, ax_start_y),
-                axis_length=self.axis_length,
-                axis_angle=((self.bars_angle + 90) % 360)
-            )
+            self.axis_obj_y = AxisObj(start_position=(ax_start_x, ax_start_y),
+                                      axis_length=self.axis_length,
+                                      axis_angle=((self.bars_angle + 90) % 360))
             self.sub_references.append(self.axis_obj_y)
         else:
             self.axis_obj_y = None
@@ -816,24 +826,20 @@ class BarGraphObj(PlotObject):
             self.axis_obj_x._geometry_locked = False
             if self.axis_obj_y:
                 self.axis_obj_y._geometry_locked = False
-
             self.axis_obj_x.assign_geometry()
             if self.axis_obj_y:
                 self.axis_obj_y.assign_geometry()
-
             self.bars_obj.assign_geometry()
             self._geometry_locked = True
-
         super().assign_geometry()
 
     def perform_skills(self):
         self.axis_obj_x.perform_skills()
         if self.axis_obj_y:
             self.axis_obj_y.perform_skills()
-            print(f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id},{self.axis_obj_y.obj_id}]")
+            print(f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id}, {self.axis_obj_y.obj_id}]")
         else:
             print(f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id}]")
-
         self.bars_obj.perform_skills()
         print(f"GroupBars => BarGraph#{self.obj_id} from BarsIDs=[{self.bars_obj.obj_id}]")
         print(f"RecognizeInstanceBarGraph => BarGraph#{self.obj_id}")
@@ -844,22 +850,65 @@ class BarGraphObj(PlotObject):
         for sub in self.sub_references:
             sub.render(ax)
 
-    # ---------------------------
-    # New standardized positioning
-    # ---------------------------
     def set_bottom_left(self, x, y, angle=0, axis_length=50, bars_num=2, **kwargs):
-        """
-        Interprets (x, y) as the bottom-left of the bar graph (with angle=0 meaning bars go horizontal).
-        """
         self.base_position = (x, y)
         self.bars_angle = angle
         self.axis_length = axis_length
         self.bars_num = bars_num
         self._geometry_locked = False
 
+    def get_bbox(self):
+        bboxes = []
+        if hasattr(self.bars_obj, "get_bbox"):
+            bboxes.append(self.bars_obj.get_bbox())
+        if hasattr(self.axis_obj_x, "get_bbox"):
+            bboxes.append(self.axis_obj_x.get_bbox())
+        if self.axis_obj_y and hasattr(self.axis_obj_y, "get_bbox"):
+            bboxes.append(self.axis_obj_y.get_bbox())
+        if bboxes:
+            return (min(b[0] for b in bboxes),
+                    min(b[1] for b in bboxes),
+                    max(b[2] for b in bboxes),
+                    max(b[3] for b in bboxes))
+        return (0, 0, 0, 0)
+
 ##############################################################################
-# Build a scene from skill graph plan
+# Scene Adjustment: Scale & Translate scene to fully fit within canvas.
 ##############################################################################
+def adjust_scene(scene, canvas=(0, 100, 0, 100)):
+    # canvas: (x_min, x_max, y_min, y_max)
+    all_bboxes = [obj.get_bbox() for obj in scene]
+    if not all_bboxes:
+        return
+    global_min_x = min(b[0] for b in all_bboxes)
+    global_min_y = min(b[1] for b in all_bboxes)
+    global_max_x = max(b[2] for b in all_bboxes)
+    global_max_y = max(b[3] for b in all_bboxes)
+    scene_width = global_max_x - global_min_x
+    scene_height = global_max_y - global_min_y
+    canvas_x_min, canvas_x_max, canvas_y_min, canvas_y_max = canvas
+    canvas_width = canvas_x_max - canvas_x_min
+    canvas_height = canvas_y_max - canvas_y_min
+    scale = min(canvas_width / scene_width, canvas_height / scene_height, 1)
+    new_scene_width = scale * scene_width
+    new_scene_height = scale * scene_height
+    desired_x_min = canvas_x_min + (canvas_width - new_scene_width) / 2
+    desired_y_min = canvas_y_min + (canvas_height - new_scene_height) / 2
+
+    def transform(pt):
+        x, y = pt
+        new_x = desired_x_min + scale * (x - global_min_x)
+        new_y = desired_y_min + scale * (y - global_min_y)
+        return (new_x, new_y)
+    for obj in scene:
+        obj.apply_transformation(transform)
+
+##############################################################################
+# Build a scene from a plan.
+##############################################################################
+# Modified to allow the plan to specify parameters for each object instance.
+# If the value is an int, that many default instances are created;
+# if it is a list, each dictionary in the list will be passed as keyword arguments.
 OBJECT_TYPES = {
     "Line": LineLow,
     "Oval": OvalLow,
@@ -872,292 +921,680 @@ OBJECT_TYPES = {
     "Arrow": ArrowObj,
 }
 
-SKILL_SYNONYMS = {
-    "GroupRectangles": "GroupRectangle",
-    "MeasureRectangles": "MeasureRectangle",
-    "CountRectangles": "CountRectangle",
-    "LocalizeRectangles": "LocalizeRectangle",
-    "RecognizeRectangles": "RecognizeInstanceRectangle",
-}
-
-def build_skill_graph():
-    import networkx as nx
-    G = nx.DiGraph()
-    skill_info = {}
-
-    def add_skill(obj, skill, deps=None):
-        lbl = skill + obj
-        skill_info[lbl] = dict(object=obj, skill=skill, deps=deps or [])
-        G.add_node(lbl)
-
-    def link_deps(lbl):
-        for d in skill_info[lbl]["deps"]:
-            G.add_edge(d, lbl)
-
-    # Lines
-
-    add_skill("Line", "RecognizeInstance")
-    add_skill("Line", "Localize", ["RecognizeInstanceLine"])
-    add_skill("Line", "Measure", ["LocalizeLine"])
-    add_skill("Line", "Group", ["MeasureLine"])
-    add_skill("Line", "Count", ["GroupLine"])
-
-    
-
-    # Ovals
-
-    add_skill("Oval", "RecognizeInstance")
-    add_skill("Oval", "Localize", ["RecognizeInstanceOval"])
-    add_skill("Oval", "Measure", ["LocalizeOval"])
-    add_skill("Oval", "Group", ["MeasureOval"])
-    add_skill("Oval", "Count", ["GroupOval"])
-
-    
-
-    # Rectangle
-    add_skill("Rectangle", "RecognizeInstance", ["GroupLine"])
-    add_skill("Rectangle", "Localize", ["RecognizeInstanceRectangle"])
-    add_skill("Rectangle", "Measure", ["LocalizeRectangle"])
-    add_skill("Rectangle", "Group", ["MeasureRectangle"])
-    add_skill("Rectangle", "Count", ["GroupRectangle"])
-
-    
-
-    # Bars
-
-    add_skill("Bars", "RecognizeInstance", ["GroupRectangle"])
-    add_skill("Bars", "Localize", ["RecognizeInstanceBars"])
-    add_skill("Bars", "Measure", ["LocalizeBars"])
-    add_skill("Bars", "Group", ["MeasureBars"])
-    add_skill("Bars", "Count", ["GroupBars"])
-
-    
-
-    # Axis
-
-    add_skill("Axis", "RecognizeInstance", ["GroupLine"])
-    add_skill("Axis", "Localize", ["RecognizeInstanceAxis"])
-    add_skill("Axis", "Measure", ["LocalizeAxis"])
-    add_skill("Axis", "Group", ["MeasureAxis"])
-    add_skill("Axis", "Count", ["GroupAxis"])
-
-    
-
-    # BarGraph
-
-    add_skill("BarGraph", "RecognizeInstance", ["GroupBars", "GroupAxis"])
-    add_skill("BarGraph", "Localize", ["RecognizeInstanceBarGraph"])
-    add_skill("BarGraph", "Measure", ["LocalizeBarGraph"])
-    add_skill("BarGraph", "Group", ["MeasureBarGraph"])
-    add_skill("BarGraph", "Count", ["GroupBarGraph"])
-
-    
-
-    # AxesPair
-
-    add_skill("AxesPair", "RecognizeInstance", ["GroupAxis"])
-    add_skill("AxesPair", "Localize", ["RecognizeInstanceAxesPair"])
-    add_skill("AxesPair", "Measure", ["LocalizeAxesPair"])
-    add_skill("AxesPair", "Group", ["MeasureAxesPair"])
-    add_skill("AxesPair", "Count", ["GroupAxesPair"])
-
-    
-
-    # NodeGraph
-
-    add_skill("NodeGraph", "RecognizeInstance", ["GroupOval", "GroupLine"])
-    add_skill("NodeGraph", "Localize", ["RecognizeInstanceNodeGraph"])
-    add_skill("NodeGraph", "Measure", ["LocalizeNodeGraph"])
-    add_skill("NodeGraph", "Group", ["MeasureNodeGraph"])
-    add_skill("NodeGraph", "Count", ["GroupNodeGraph"])
-
-
-    
-
-    # Scatterplot
-
-    add_skill("Scatterplot", "RecognizeInstance", ["GroupAxis", "GroupMarker"])
-    add_skill("Scatterplot", "Localize", ["RecognizeInstanceScatterplot"])
-    add_skill("Scatterplot", "Measure", ["LocalizeScatterplot"])
-    add_skill("Scatterplot", "Group", ["MeasureScatterplot"])
-    add_skill("Scatterplot", "Count", ["GroupScatterplot"])
-
-    
-
-    # PieChart
-
-    add_skill("PieChart", "RecognizeInstance", ["GroupOval", "GroupLine"])
-    add_skill("PieChart", "Localize", ["RecognizeInstancePieChart"])
-    add_skill("PieChart", "Measure", ["LocalizePieChart"])
-    add_skill("PieChart", "Group", ["MeasurePieChart"])
-    add_skill("PieChart", "Count", ["GroupPieChart"])
-
-    
-
-    # LineGraph
-
-    add_skill("LineGraph", "RecognizeInstance", ["GroupAxis", "GroupLine"])
-    add_skill("LineGraph", "Localize", ["RecognizeInstanceLineGraph"])
-    add_skill("LineGraph", "Measure", ["LocalizeLineGraph"])
-    add_skill("LineGraph", "Group", ["MeasureLineGraph"])
-    add_skill("LineGraph", "Count", ["GroupLineGraph"])
-    
-        # Triangle
-    add_skill("Triangle", "RecognizeInstance", ["GroupLine"])
-    add_skill("Triangle", "Localize", ["RecognizeInstanceTriangle"])
-    add_skill("Triangle", "Measure", ["LocalizeTriangle"])
-    add_skill("Triangle", "Group", ["MeasureTriangle"])
-    add_skill("Triangle", "Count", ["GroupTriangle"])
-
-    # Polygon
-    add_skill("Polygon", "RecognizeInstance", ["GroupLine"])
-    add_skill("Polygon", "Localize", ["RecognizeInstancePolygon"])
-    add_skill("Polygon", "Measure", ["LocalizePolygon"])
-    add_skill("Polygon", "Group", ["MeasurePolygon"])
-    add_skill("Polygon", "Count", ["GroupPolygon"])
-
-    # Arrow
-    add_skill("Arrow", "RecognizeInstance", ["GroupLine"])
-    add_skill("Arrow", "Localize", ["RecognizeInstanceArrow"])
-    add_skill("Arrow", "Measure", ["LocalizeArrow"])
-    add_skill("Arrow", "Group", ["MeasureArrow"])
-    add_skill("Arrow", "Count", ["GroupArrow"])
-
-
-    for lbl in list(skill_info.keys()):
-        link_deps(lbl)
-
-    return G, skill_info
-
-def gather_dependencies(skill_label, skill_info, G):
-    import networkx as nx
-    needed = set()
-    stack = [skill_label]
-    while stack:
-        cur = stack.pop()
-        if cur not in needed:
-            needed.add(cur)
-            for dep in skill_info[cur]["deps"]:
-                if dep not in needed:
-                    stack.append(dep)
-    subg = G.subgraph(needed)
-    topo_list = list(nx.topological_sort(subg))
-    return topo_list
-
-
-
 def build_scene_from_plan(high_level_objects):
-    """
-    We only create top-level objects according to plan.
-    Sub-objects are created in their constructors.
-    """
-
     scene = []
-    for alias, cnt in high_level_objects.items():
+    for alias, spec in high_level_objects.items():
         cls_ = OBJECT_TYPES.get(alias, None)
-        if cls_ and cnt > 0:
-            for _ in range(cnt):
+        if cls_ is None:
+            continue
+        if isinstance(spec, int):
+            for _ in range(spec):
                 scene.append(cls_())
-    return scene
-
-def build_scene_from_plan1(deps, skill_info):
-    """
-    We only create top-level objects according to plan.
-    Sub-objects are created in their constructors.
-    """
-    needed_counts = {}
-    for alias in OBJECT_TYPES:
-        needed_counts[alias] = 0
-
-    for lbl in deps:
-        obj_type = skill_info[lbl]["object"]
-        action = skill_info[lbl]["skill"]
-        if action == "RecognizeInstance":
-            needed_counts[obj_type] = max(needed_counts[obj_type], 1)
-        elif action in ["Group", "Count"]:
-            needed_counts[obj_type] = max(needed_counts[obj_type], 2)
-
-    scene = []
-    for alias, cnt in needed_counts.items():
-        cls_ = OBJECT_TYPES.get(alias, None)
-        if cls_ and cnt > 0:
-            for _ in range(cnt):
-                scene.append(cls_())
+        elif isinstance(spec, list):
+            for params in spec:
+                scene.append(cls_(**params))
     return scene
 
 ##############################################################################
-# Putting it all together
+# New Function: Create Scene (scene construction without display/saving)
 ##############################################################################
-def run_skill_demo(skill_label, outdir="output", distractor_skills=None):
-    # Apply synonyms
-    if skill_label in SKILL_SYNONYMS:
-        skill_label = SKILL_SYNONYMS[skill_label]
+def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=False):
+    if avoid_types is None:
+        avoid_types = []
+    scene = build_scene_from_plan(plan)
+    # Add extra distractor objects if scene is too small, avoiding types in avoid_types.
+    total = len(scene)
+    min_total = 3
+    max_total = 6
+    available_types = [t for t in list(OBJECT_TYPES.keys()) if t not in avoid_types]
+    while total < min_total and available_types:
+        extra_type = random.choice(available_types)
+        scene.append(OBJECT_TYPES[extra_type]())
+        total += 1
+    while total > max_total and scene:
+        scene.pop()
+        total -= 1
 
-    import networkx as nx
-    import random
-
-    G, skill_info = build_skill_graph()
-    if skill_label not in G.nodes():
-        raise ValueError(f"Skill '{skill_label}' not found in graph")
-
-    high_level_objects = {}
-
-    # Add the main object
-    main_obj_type = skill_info[skill_label]["object"]
-    high_level_objects[main_obj_type] = 1  # Always include the main object
-
-    # Handle distractor skills
-    if distractor_skills:
-        for ds_label, max_count, probability in distractor_skills:
-            if ds_label in SKILL_SYNONYMS:
-                ds_label = SKILL_SYNONYMS[ds_label]
-            for c in range(max_count):
-                print(c)
-                if ds_label in G.nodes() and random.random() < probability:
-                    ds_obj_type = skill_info[ds_label]["object"]
-                    high_level_objects[ds_obj_type] = high_level_objects.get(ds_obj_type, 0) + 1
-
-    scene = build_scene_from_plan(high_level_objects)
-    # 1) Assign geometry
     for obj in scene:
         obj.assign_geometry()
 
-    # 2) Perform skill logic
     for obj in scene:
         obj.perform_skills()
 
-    # 3) Render
+    if not allow_partial:
+        adjust_scene(scene, canvas=canvas)
+    return scene
+
+##############################################################################
+# New Function: Display Scene and Save Structure
+##############################################################################
+def display_and_save_scene(scene, outdir="output", question=None, answer=None, canvas=(0,100,0,100)):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
-
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.set_xlim(0, 100)
-    ax.set_ylim(0, 100)
+    x_min, x_max, y_min, y_max = canvas
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
     ax.invert_yaxis()
     ax.set_aspect("equal")
     ax.axis("off")
-
     for obj in scene:
         obj.render(ax)
-
-    # Optional noise
-    total_pixels = 100 * 100
+    # Add noise.
+    xs = sorted(ax.get_xlim())
+    ys = sorted(ax.get_ylim())
+    total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
     noise_level = 0.01
     nn = int(total_pixels * noise_level)
     for _ in range(nn):
-        xx = random.randint(0, 99)
-        yy = random.randint(0, 99)
+        xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+        yy = random.randint(int(ys[0]), int(ys[1]) - 1)
         ax.plot(xx, yy, 'ks', markersize=1)
-
-    outpath = os.path.join(outdir, "scene.png")
-    plt.savefig(outpath, dpi=120)
+    image_out = os.path.join(outdir, "scene.png")
+    plt.savefig(image_out, dpi=120)
     plt.close()
-    print(f"\nScene saved to {outpath}\n")
+    print(f"\nScene saved to {image_out}\n")
+    scene_structure = [obj.to_dict() for obj in scene]
+    json_out = os.path.join(outdir, "scene_structure.json")
+    with open(json_out, "w") as json_file:
+        json.dump(scene_structure, json_file, indent=2)
+    print(f"Object structure saved to {json_out}\n")
+    annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
+    ann_out = os.path.join(outdir, "scene_annotation.json")
+    with open(ann_out, "w") as ann_file:
+        json.dump(annotation, ann_file, indent=2)
+    print(f"Annotation saved to {ann_out}\n")
 
 ##############################################################################
-# Demo
+# Modified run_scene_demo: Integrates scene creation and display.
+##############################################################################
+def run_scene_demo(plan, outdir="output", distractor_skills=None, allow_partial=False,
+                   question=None, answer=None, avoid_types=None, canvas=(0,100,0,100)):
+    scene = create_scene(plan, avoid_types=avoid_types, canvas=canvas, allow_partial=allow_partial)
+    display_and_save_scene(scene, outdir=outdir, question=question, answer=answer, canvas=canvas)
+
+##############################################################################
+# Selected Question Demo Functions (Robust Versions)
+##############################################################################
+
+# 1. "Is there an <object type> in the image?"
+def demo_question_object(answer=True, outdir="demo_output/question_object", canvas_size=(100,100)):
+    width, height = canvas_size
+    canvas = (0, width, 0, height)
+    obj_type = random.choice(["Line", "Oval", "Rectangle", "Triangle", "Arrow"])
+    if answer:
+        plan = {obj_type: random.randint(1, 2)}
+    else:
+        plan = {obj_type: 0}
+    scene = create_scene(plan, canvas=canvas, avoid_types=[] if answer else [obj_type])
+    if not answer:
+        for obj in scene:
+            if obj.ALIAS == obj_type:
+                raise Exception(f"Error: {obj_type} instance found when answer should be false.")
+    question_text = f"Is there a {obj_type} in the image?"
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+# 2 "Are there any parallel/perpendicular lines in the image?"
+def demo_question_parallel_perp_lines(answer=True,
+                                      outdir="demo_output/question_parallel_perp_lines",
+                                      canvas_size=(100, 100)):
+    width, height = canvas_size
+    canvas = (0, width, 0, height)
+    epsilon = 4
+    MAX_RETRY = 50
+    margin = 5
+    test_parallel = random.choice([True, False])
+    relation_text = "parallel" if test_parallel else "perpendicular"
+    question_text = f"Are there any {relation_text} lines in the image?"
+
+    # New option: if answer is True, with 2% chance each, generate a rectangle, bars, or axis.
+    if answer:
+        r = random.random()
+        if r < 0.02:
+            plan = {"Rectangle": 1}
+            scene = create_scene(plan, canvas=canvas, avoid_types=[])
+            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+            return
+        elif r < 0.04:
+            plan = {"Bars": 1}
+            scene = create_scene(plan, canvas=canvas, avoid_types=[])
+            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+            return
+        elif r < 0.06:
+            plan = {"Axis": 1}
+            scene = create_scene(plan, canvas=canvas, avoid_types=[])
+            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+            return
+
+    def compute_endpoint(p, angle, length):
+        r = math.radians(angle)
+        return (p[0] + length * math.cos(r), p[1] + length * math.sin(r))
+
+    def generate_angles(base, valid):
+        if valid:
+            offset = random.uniform(-epsilon / 2, epsilon / 2)
+            a1 = base % 360
+            a2 = (base + (0 if test_parallel else 90) + offset) % 360
+        else:
+            a1 = base % 360
+            choices = [10, 20, 30, 40] if test_parallel else [20, 40, 120]
+            a2 = (base + random.choice(choices)) % 360
+        return a1, a2
+
+    # Iterative method to robustly gather all lines in the scene.
+    def gather_all_lines(obj):
+        lines = []
+        stack = [obj]
+        while stack:
+            current = stack.pop()
+            if getattr(current, "ALIAS", None) == "Line":
+                lines.append(current)
+            if hasattr(current, "sub_references"):
+                stack.extend(current.sub_references)
+        return lines
+
+    for _ in range(MAX_RETRY):
+        base = random.uniform(0, 360)
+        angle1, angle2 = generate_angles(base, answer)
+        p1 = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
+        p2 = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
+        len1 = random.uniform(10, width * 0.6)
+        len2 = random.uniform(10, width * 0.6)
+        plan = {"Line": [
+            {"p1": p1, "p2": compute_endpoint(p1, angle1, len1)},
+            {"p1": p2, "p2": compute_endpoint(p2, angle2, len2)}
+        ]}
+        scene = create_scene(plan, canvas=canvas, avoid_types=[])
+
+        # Gather all lines from the generated scene using the iterative approach.
+        all_lines = []
+        for obj in scene:
+            all_lines.extend(gather_all_lines(obj))
+        if len(all_lines) < 2:
+            continue
+
+        print(all_lines)
+
+        # Extract angles and sort them for efficient searching.
+        angles = [get_line_length_and_angle(ln.p1, ln.p2)[1] for ln in all_lines]
+        angles.sort()
+        relation_found = False
+
+        if test_parallel:
+            # Check for any consecutive pair with a small difference (accounting for wrap-around).
+            for i in range(len(angles) - 1):
+                if abs(angles[i+1] - angles[i]) <= epsilon:
+                    relation_found = True
+                    break
+            # Also check the wrap-around difference.
+            if not relation_found and (360 - angles[-1] + angles[0]) <= epsilon:
+                relation_found = True
+        else:
+            # For perpendicular lines, use binary search.
+            for angle in angles:
+                target = angle + 90
+                # Since angles are in [0,360), adjust target if needed.
+                if target > 360:
+                    target -= 360
+                    # Because of wrap-around, check both ends.
+                    idx1 = bisect.bisect_left(angles, target - epsilon)
+                    idx2 = bisect.bisect_left(angles, (angle + 90) - epsilon)
+                    if any(abs(a - target) <= epsilon for a in angles[idx1:]) or \
+                       any(abs((a + 360) - (angle + 90)) <= epsilon for a in angles if a < target):
+                        relation_found = True
+                        break
+                else:
+                    idx = bisect.bisect_left(angles, target - epsilon)
+                    while idx < len(angles) and angles[idx] <= target + epsilon:
+                        relation_found = True
+                        break
+                    if relation_found:
+                        break
+
+        # If answer should be True, ensure relation is found; if False, ensure none is found.
+        if (answer and relation_found) or (not answer and not relation_found):
+            break
+
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+
+# 3. "Are there any arrows pointing <upward | downward | leftward | rightward>?"
+def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arrow_direction", canvas_size=(100,100)):
+    MAX_RETRY = 5
+    width, height = canvas_size
+    canvas = (0, width, 0, height)
+    direction = random.choice(["upward", "downward", "leftward", "rightward"])
+    tol_adjust = 30
+    direction_angles = {"upward": 270, "downward": 90, "leftward": 180, "rightward": 0}
+
+    NO_ARROW_PROB_FALSE = 0.15  # probability to generate scene with no arrow
+
+    attempt = 0
+    scene = None
+    plan = None
+    while attempt < MAX_RETRY:
+        attempt += 1
+        if answer:
+            base_angle = direction_angles[direction]
+            angle = base_angle + random.uniform(-tol_adjust, tol_adjust)
+            length = random.uniform(20, min(width, height) / 1.5)
+            margin = 5
+            start_x = random.uniform(margin, width - margin)
+            start_y = random.uniform(margin, height - margin)
+            plan = {"Arrow": [{
+                "angle": angle,
+                "length": length,
+                "start": (start_x, start_y)
+            }]}
+        else:
+            # For false answer, with some probability generate scene without any arrow.
+            if random.random() < NO_ARROW_PROB_FALSE:
+                plan = {}  # no objects
+            else:
+                wrong_directions = [d for d in direction_angles if d != direction]
+                wrong_direction = random.choice(wrong_directions)
+                base_angle = direction_angles[wrong_direction]
+                angle = base_angle + random.uniform(-tol_adjust, tol_adjust)
+                length = random.uniform(20, min(width, height) / 1.5)
+                margin = 5
+                start_x = random.uniform(margin, width - margin)
+                start_y = random.uniform(margin, height - margin)
+                plan = {"Arrow": [{
+                    "angle": angle,
+                    "length": length,
+                    "start": (start_x, start_y)
+                }]}
+        scene = create_scene(plan, canvas=canvas)
+        if not answer:
+            # If scene is empty or there is no arrow, it's acceptable.
+            arrow_objs = [obj for obj in scene if obj.ALIAS == "Arrow"]
+            if not arrow_objs:
+                break
+            # Check that no arrow is pointing the target direction.
+            violation = False
+            for obj in arrow_objs:
+                if abs(obj.angle - direction_angles[direction]) < tol_adjust:
+                    violation = True
+                    break
+            if violation:
+                if attempt == MAX_RETRY:
+                    raise Exception("Check failed: An arrow pointing the target direction was found when answer should be false.")
+                continue
+        break
+
+    question_text = f"Is there an arrow pointing {direction}?"
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+
+# 4. Does a <shape 1> intersect with a <shape 2>?
+def demo_question_intersect_objects(answer=True,
+                                    outdir="demo_output/question_intersect_objects",
+                                    canvas_size=(100, 100)):
+    import math, random
+    width, height = canvas_size
+    canvas = (0, width, 0, height)
+    
+    # Candidate types; note that "Circle" is treated as an oval,
+    # and "Square", "Rectangle", "Triangle" and "Polygon" are treated as polygons.
+    candidate_types = ["Line", "Oval", "Circle", "Rectangle", "Square", "Triangle", "Polygon"]
+    type1 = random.choice(candidate_types)
+    type2 = random.choice(candidate_types)
+    question_text = f"Does an {type1} intersect with an {type2}?"
+    
+    # ------------------------
+    # Helper: Return a string representing the geometric category.
+    def geom_type(shape):
+        if shape == "Line":
+            return "line"
+        elif shape in ["Oval", "Circle"]:
+            return "oval"
+        else:
+            return "polygon"
+    
+    # ------------------------
+    # Helper: Generate random parameters for a shape.
+    margin = 5
+    def gen_params(shape):
+        if shape == "Line":
+            p1 = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
+            p2 = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
+            return {"p1": p1, "p2": p2}
+        elif shape in ["Oval", "Circle", "Rectangle", "Square"]:
+            center = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
+            w = random.uniform(10, width / 2)
+            h = random.uniform(10, height / 2)
+            if shape in ["Circle", "Square"]:
+                h = w  # force equal dimensions
+            angle = random.uniform(0, 360)
+            return {"center": center, "width": w, "height": h, "angle": angle}
+        elif shape == "Triangle":
+            # Use a center point and generate three vertices with small random offsets.
+            center = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
+            pts = []
+            for _ in range(3):
+                pts.append((center[0] + random.uniform(-10, 10),
+                            center[1] + random.uniform(-10, 10)))
+            return {"vertices": pts}
+        elif shape == "Polygon":
+            # Generate a 5-vertex polygon by perturbing points around a circle.
+            center = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
+            pts = []
+            count = 5
+            for i in range(count):
+                ang = 2 * math.pi * i / count + random.uniform(-0.2, 0.2)
+                r = random.uniform(10, 30)
+                pts.append((center[0] + r * math.cos(ang),
+                            center[1] + r * math.sin(ang)))
+            return {"vertices": pts}
+    
+    # ------------------------
+    # Helper: Slightly perturb ("wiggle") the parameters of an object.
+    def wiggle_params(params, shape, delta=5, angle_delta=10):
+        new_params = params.copy()
+        if shape == "Line":
+            new_params["p1"] = (params["p1"][0] + random.uniform(-delta, delta),
+                                params["p1"][1] + random.uniform(-delta, delta))
+            new_params["p2"] = (params["p2"][0] + random.uniform(-delta, delta),
+                                params["p2"][1] + random.uniform(-delta, delta))
+        elif shape in ["Oval", "Circle", "Rectangle", "Square"]:
+            new_params["center"] = (params["center"][0] + random.uniform(-delta, delta),
+                                    params["center"][1] + random.uniform(-delta, delta))
+            new_params["angle"] = (params["angle"] + random.uniform(-angle_delta, angle_delta)) % 360
+            # Optionally wiggle width/height if desired.
+        elif shape in ["Triangle", "Polygon"]:
+            new_vertices = []
+            for (x, y) in params["vertices"]:
+                new_vertices.append((x + random.uniform(-delta, delta),
+                                     y + random.uniform(-delta, delta)))
+            new_params["vertices"] = new_vertices
+        return new_params
+
+    # =========================================================================
+    # Intersection routines – adapted to the object representations used here.
+    #
+    # All objects are represented as dummy objects with attributes.
+    # A Line has attributes: p1, p2.
+    # An Oval (or Circle) has attributes: center, width, height, angle.
+    # A Polygon (Triangle, Rectangle, Square, Polygon) is represented by vertices.
+    # =========================================================================
+    
+    # --- Helper: Line-line intersection.
+    def _line_line_intersect(p1, p2, p3, p4):
+        def orientation(a, b, c):
+            val = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1])
+            if abs(val) < 1e-9:
+                return 0
+            return 1 if val > 0 else 2
+        def on_segment(a, b, c):
+            return (min(a[0], c[0]) <= b[0] <= max(a[0], c[0]) and
+                    min(a[1], c[1]) <= b[1] <= max(a[1], c[1]))
+        o1 = orientation(p1, p2, p3)
+        o2 = orientation(p1, p2, p4)
+        o3 = orientation(p3, p4, p1)
+        o4 = orientation(p3, p4, p2)
+        if o1 != o2 and o3 != o4:
+            return True
+        if o1 == 0 and on_segment(p1, p3, p2):
+            return True
+        if o2 == 0 and on_segment(p1, p4, p2):
+            return True
+        if o3 == 0 and on_segment(p3, p1, p4):
+            return True
+        if o4 == 0 and on_segment(p3, p2, p4):
+            return True
+        return False
+    
+    def doesLineLineIntersect(line1, line2):
+        return _line_line_intersect(line1.p1, line1.p2, line2.p1, line2.p2)
+    
+    # --- Helper: Check if a point is inside a polygon.
+    def _point_in_polygon(px, py, polygon_dict):
+        inside = False
+        vertices = polygon_dict["vertices"]
+        n = len(vertices)
+        j = n - 1
+        for i in range(n):
+            xi, yi = vertices[i]
+            xj, yj = vertices[j]
+            if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi + 1e-9) + xi):
+                inside = not inside
+            j = i
+        return inside
+    
+    # --- Helper: Rotate a point about a center.
+    def _rotate_point(point, center, angle_deg):
+        rad = math.radians(angle_deg)
+        x, y = point
+        cx, cy = center
+        x -= cx
+        y -= cy
+        xr = x * math.cos(rad) - y * math.sin(rad)
+        yr = x * math.sin(rad) + y * math.cos(rad)
+        return (xr + cx, yr + cy)
+    
+    # --- Intersection: Line-Oval.
+    def doesLineOvalIntersect(line, oval):
+        cx, cy = oval.center
+        ang = oval.angle
+        w2, h2 = oval.width / 2.0, oval.height / 2.0
+        def transform(pt):
+            x, y = pt[0] - cx, pt[1] - cy
+            rad = math.radians(-ang)
+            xr = x * math.cos(rad) - y * math.sin(rad)
+            yr = x * math.sin(rad) + y * math.cos(rad)
+            return (xr, yr)
+        p1_local = transform(line.p1)
+        p2_local = transform(line.p2)
+        dx = p2_local[0] - p1_local[0]
+        dy = p2_local[1] - p1_local[1]
+        A = (dx**2)/(w2**2) + (dy**2)/(h2**2)
+        B = 2 * (p1_local[0]*dx/(w2**2) + p1_local[1]*dy/(h2**2))
+        C = (p1_local[0]**2)/(w2**2) + (p1_local[1]**2)/(h2**2) - 1
+        disc = B*B - 4*A*C
+        if disc < 0:
+            return False
+        sqrt_disc = math.sqrt(disc)
+        t1 = (-B + sqrt_disc) / (2*A)
+        t2 = (-B - sqrt_disc) / (2*A)
+        return (0 <= t1 <= 1) or (0 <= t2 <= 1)
+    
+    # --- Intersection: Line-Polygon.
+    def doesLinePolygonIntersect(line, polygon_obj):
+        if _point_in_polygon(line.p1[0], line.p1[1], {"vertices": polygon_obj.vertices}):
+            return True
+        if _point_in_polygon(line.p2[0], line.p2[1], {"vertices": polygon_obj.vertices}):
+            return True
+        verts = polygon_obj.vertices
+        n = len(verts)
+        for i in range(n):
+            p3 = verts[i]
+            p4 = verts[(i+1) % n]
+            if _line_line_intersect(line.p1, line.p2, p3, p4):
+                return True
+        return False
+    
+    # --- Intersection: Oval-Oval.
+    def doesOvalOvalIntersect(oval1, oval2):
+        def sample_oval(ov, count=36):
+            pts = []
+            cx, cy = ov.center
+            w2, h2 = ov.width / 2.0, ov.height / 2.0
+            for i in range(count):
+                theta = 2 * math.pi * i / count
+                x = cx + w2 * math.cos(theta)
+                y = cy + h2 * math.sin(theta)
+                pts.append(_rotate_point((x, y), ov.center, ov.angle))
+            return pts
+        pts1 = sample_oval(oval1)
+        pts2 = sample_oval(oval2)
+        def point_in_oval(pt, ov):
+            cx, cy = ov.center
+            rad = math.radians(-ov.angle)
+            x, y = pt[0] - cx, pt[1] - cy
+            xr = x * math.cos(rad) - y * math.sin(rad)
+            yr = x * math.sin(rad) + y * math.cos(rad)
+            w2, h2 = ov.width/2.0, ov.height/2.0
+            return (xr**2)/(w2**2) + (yr**2)/(h2**2) <= 1.0
+        for pt in pts1:
+            if point_in_oval(pt, oval2):
+                return True
+        for pt in pts2:
+            if point_in_oval(pt, oval1):
+                return True
+        return False
+    
+    # --- Intersection: Polygon-Polygon.
+    def doesPolyPolyIntersect(poly1, poly2):
+        if any(_point_in_polygon(x, y, {"vertices": poly2.vertices}) for (x, y) in poly1.vertices):
+            return True
+        if any(_point_in_polygon(x, y, {"vertices": poly1.vertices}) for (x, y) in poly2.vertices):
+            return True
+        def edges(vertices):
+            return [(vertices[i], vertices[(i+1) % len(vertices)]) for i in range(len(vertices))]
+        for e1 in edges(poly1.vertices):
+            for e2 in edges(poly2.vertices):
+                if _line_line_intersect(e1[0], e1[1], e2[0], e2[1]):
+                    return True
+        return False
+    
+    # --- Intersection: Oval-Polygon.
+    def doesOvalPolygonIntersect(oval, polygon_obj):
+        for (x, y) in polygon_obj.vertices:
+            cx, cy = oval.center
+            rad = math.radians(-oval.angle)
+            dx, dy = x - cx, y - cy
+            xr = dx * math.cos(rad) - dy * math.sin(rad)
+            yr = dx * math.sin(rad) + dy * math.cos(rad)
+            w2, h2 = oval.width/2.0, oval.height/2.0
+            if (xr**2)/(w2**2) + (yr**2)/(h2**2) <= 1:
+                return True
+        if _point_in_polygon(oval.center[0], oval.center[1], {"vertices": polygon_obj.vertices}):
+            return True
+        class DummyLine:
+            pass
+        verts = polygon_obj.vertices
+        n = len(verts)
+        for i in range(n):
+            dummy = DummyLine()
+            dummy.p1 = verts[i]
+            dummy.p2 = verts[(i+1) % n]
+            if doesLineOvalIntersect(dummy, oval):
+                return True
+        return False
+    
+    # --- Helper: Convert our parameter dictionary into a dummy object.
+    def create_dummy(params, shape):
+        class Dummy:
+            pass
+        dummy = Dummy()
+        g = geom_type(shape)
+        if g == "line":
+            dummy.p1 = params["p1"]
+            dummy.p2 = params["p2"]
+        elif g == "oval":
+            dummy.center = params["center"]
+            dummy.width = params["width"]
+            dummy.height = params["height"]
+            dummy.angle = params["angle"]
+        elif g == "polygon":
+            # If the params already include vertices, use them.
+            if "vertices" in params:
+                dummy.vertices = params["vertices"]
+            else:
+                # Otherwise, assume the object was specified by center, width, height, angle
+                # and convert it to a rectangle polygon.
+                cx, cy = params["center"]
+                w, h, angle = params["width"], params["height"], params["angle"]
+                dx, dy = w / 2.0, h / 2.0
+                pts = [
+                    _rotate_point((cx - dx, cy - dy), (cx, cy), angle),
+                    _rotate_point((cx + dx, cy - dy), (cx, cy), angle),
+                    _rotate_point((cx + dx, cy + dy), (cx, cy), angle),
+                    _rotate_point((cx - dx, cy + dy), (cx, cy), angle)
+                ]
+                dummy.vertices = pts
+        return dummy
+    
+    # --- Main intersection dispatch.
+    def intersect(params1, shape1, params2, shape2):
+        obj1 = create_dummy(params1, shape1)
+        obj2 = create_dummy(params2, shape2)
+        g1 = geom_type(shape1)
+        g2 = geom_type(shape2)
+        if g1 == "line" and g2 == "line":
+            return doesLineLineIntersect(obj1, obj2)
+        elif g1 == "line" and g2 == "oval":
+            return doesLineOvalIntersect(obj1, obj2)
+        elif g1 == "oval" and g2 == "line":
+            return doesLineOvalIntersect(obj2, obj1)
+        elif g1 == "line" and g2 == "polygon":
+            return doesLinePolygonIntersect(obj1, obj2)
+        elif g1 == "polygon" and g2 == "line":
+            return doesLinePolygonIntersect(obj2, obj1)
+        elif g1 == "oval" and g2 == "oval":
+            return doesOvalOvalIntersect(obj1, obj2)
+        elif g1 == "polygon" and g2 == "polygon":
+            return doesPolyPolyIntersect(obj1, obj2)
+        elif g1 == "oval" and g2 == "polygon":
+            return doesOvalPolygonIntersect(obj1, obj2)
+        elif g1 == "polygon" and g2 == "oval":
+            return doesOvalPolygonIntersect(obj2, obj1)
+        else:
+            return False
+
+    # ------------------------
+    # Generate initial parameters that satisfy the required relation.
+    MAX_INITIAL_TRIES = 100
+    params1 = None
+    params2 = None
+    for _ in range(MAX_INITIAL_TRIES):
+        p1 = gen_params(type1)
+        p2 = gen_params(type2)
+        does_int = intersect(p1, type1, p2, type2)
+        if answer and does_int:
+            params1, params2 = p1, p2
+            break
+        elif (not answer) and (not does_int):
+            params1, params2 = p1, p2
+            break
+    if params1 is None or params2 is None:
+        raise Exception("Could not generate initial parameters meeting the condition.")
+    
+    # ------------------------
+    # "Wiggle" the parameters so the scene isn’t too static.
+    WIGGLE_ATTEMPTS = 10
+    if answer:
+        # For a true answer, keep small changes that preserve intersection.
+        for _ in range(WIGGLE_ATTEMPTS):
+            new_p1 = wiggle_params(params1, type1)
+            if intersect(new_p1, type1, params2, type2):
+                params1 = new_p1
+            new_p2 = wiggle_params(params2, type2)
+            if intersect(params1, type1, new_p2, type2):
+                params2 = new_p2
+    else:
+        # For a false answer, keep changes that preserve non-intersection.
+        for _ in range(WIGGLE_ATTEMPTS):
+            new_p1 = wiggle_params(params1, type1)
+            if not intersect(new_p1, type1, params2, type2):
+                params1 = new_p1
+            new_p2 = wiggle_params(params2, type2)
+            if not intersect(params1, type1, new_p2, type2):
+                params2 = new_p2
+    
+    # ------------------------
+    # Build the plan. We follow the same plan format as used in other demos:
+    # a dictionary mapping object type to a list of parameter dictionaries.
+    plan = {type1: [params1], type2: [params2]}
+    
+    # Generate and display the scene.
+    scene = create_scene(plan, canvas=canvas)
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+
+##############################################################################
+# Main Demo: Run one demo per question.
 ##############################################################################
 if __name__ == "__main__":
-    # Example skill
-    test_skill = "RecognizeInstanceArrow"
-    run_skill_demo(test_skill, outdir="demo_output", distractor_skills=[("RecognizeInstanceLine", 10, 0.003)])
+    CANVAS_SIZE = (100, 100)  # width, height
+    # Uncomment any of the following to test:
+    #demo_question_object(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
+    #demo_question_parallel_perp_lines(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
+    #demo_question_arrow_direction(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
+    demo_question_intersect_objects(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
