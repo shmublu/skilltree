@@ -6,6 +6,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 import bisect
+import uuid 
+import csv
+import base64
+from io import BytesIO
+
 
 # We disable interactive mode and enforce a specific backend for consistency.
 plt.ioff()
@@ -940,7 +945,7 @@ def build_scene_from_plan(high_level_objects):
 ##############################################################################
 def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=False):
     if avoid_types is None:
-        avoid_types = []
+        avoid_types = ["BarGraph", "Bars", "Axis"]
     scene = build_scene_from_plan(plan)
     # Add extra distractor objects if scene is too small, avoiding types in avoid_types.
     total = len(scene)
@@ -968,42 +973,110 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Fal
 ##############################################################################
 # New Function: Display Scene and Save Structure
 ##############################################################################
-def display_and_save_scene(scene, outdir="output", question=None, answer=None, canvas=(0,100,0,100)):
-    if not os.path.exists(outdir):
-        os.makedirs(outdir)
-    fig, ax = plt.subplots(figsize=(5, 5))
-    x_min, x_max, y_min, y_max = canvas
-    ax.set_xlim(x_min, x_max)
-    ax.set_ylim(y_min, y_max)
-    ax.invert_yaxis()
-    ax.set_aspect("equal")
-    ax.axis("off")
-    for obj in scene:
-        obj.render(ax)
-    # Add noise.
-    xs = sorted(ax.get_xlim())
-    ys = sorted(ax.get_ylim())
-    total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
-    noise_level = 0.01
-    nn = int(total_pixels * noise_level)
-    for _ in range(nn):
-        xx = random.randint(int(xs[0]), int(xs[1]) - 1)
-        yy = random.randint(int(ys[0]), int(ys[1]) - 1)
-        ax.plot(xx, yy, 'ks', markersize=1)
-    image_out = os.path.join(outdir, "scene.png")
-    plt.savefig(image_out, dpi=120)
-    plt.close()
-    print(f"\nScene saved to {image_out}\n")
-    scene_structure = [obj.to_dict() for obj in scene]
-    json_out = os.path.join(outdir, "scene_structure.json")
-    with open(json_out, "w") as json_file:
-        json.dump(scene_structure, json_file, indent=2)
-    print(f"Object structure saved to {json_out}\n")
-    annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
-    ann_out = os.path.join(outdir, "scene_annotation.json")
-    with open(ann_out, "w") as ann_file:
-        json.dump(annotation, ann_file, indent=2)
-    print(f"Annotation saved to {ann_out}\n")
+
+def display_and_save_scene(scene, outdir="output", question=None, answer=None, canvas=(0, 100, 0, 100), huggingface_dataset=True):
+    if huggingface_dataset:
+        # Ensure the output directories exist.
+        outdir = "output"
+        image_folder = os.path.join(outdir, "images")
+        os.makedirs(outdir, exist_ok=True)
+        os.makedirs(image_folder, exist_ok=True)
+        
+        # Generate a unique filename using uuid4.
+        unique_id = uuid.uuid4().hex
+        image_filename = f"scene_{unique_id}.png"
+        image_out = os.path.join(image_folder, image_filename)
+        
+        # Create figure and render the scene.
+        fig, ax = plt.subplots(figsize=(5, 5))
+        x_min, x_max, y_min, y_max = canvas
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.invert_yaxis()
+        ax.set_aspect("equal")
+        ax.axis("off")
+    
+        for obj in scene:
+            obj.render(ax)
+    
+        # Optionally add some noise to the image.
+        xs = sorted(ax.get_xlim())
+        ys = sorted(ax.get_ylim())
+        total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
+        noise_level = 0.01
+        nn = int(total_pixels * noise_level)
+        for _ in range(nn):
+            xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+            yy = random.randint(int(ys[0]), int(ys[1]) - 1)
+            ax.plot(xx, yy, 'ks', markersize=1)
+    
+        # Save the scene image.
+        plt.savefig(image_out, dpi=120)
+        plt.close(fig)
+        print(f"Scene image saved to {image_out}")
+    
+        # Prepare scene structure and annotation.
+        scene_structure = [obj.to_dict() for obj in scene]
+        annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
+    
+        # Append a row to the Hugging Face dataset CSV with the path to the image.
+        hf_out = os.path.join(outdir, "huggingface_dataset.csv")
+        file_mode = "a" if os.path.exists(hf_out) else "w"
+        with open(hf_out, file_mode, newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=["answer", "question", "image"])
+            if file_mode == "w":
+                writer.writeheader()
+            writer.writerow({
+                "answer": str(answer),
+                "question": str(question),
+                "image": image_out
+            })
+    
+        print(f"HuggingFace-style dataset row appended to {hf_out}")
+    
+    else:
+        # Non Hugging Face dataset branch: Save images and annotations as separate files.
+        os.makedirs(outdir, exist_ok=True)
+    
+        fig, ax = plt.subplots(figsize=(5, 5))
+        x_min, x_max, y_min, y_max = canvas
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.invert_yaxis()
+        ax.set_aspect("equal")
+        ax.axis("off")
+    
+        for obj in scene:
+            obj.render(ax)
+    
+        xs = sorted(ax.get_xlim())
+        ys = sorted(ax.get_ylim())
+        total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
+        noise_level = 0.01
+        nn = int(total_pixels * noise_level)
+        for _ in range(nn):
+            xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+            yy = random.randint(int(ys[0]), int(ys[1]) - 1)
+            ax.plot(xx, yy, 'ks', markersize=1)
+    
+        image_out = os.path.join(outdir, "scene.png")
+        plt.savefig(image_out, dpi=120)
+        plt.close()
+    
+        print(f"\nScene saved to {image_out}\n")
+    
+        scene_structure = [obj.to_dict() for obj in scene]
+        json_out = os.path.join(outdir, "scene_structure.json")
+        with open(json_out, "w") as json_file:
+            json.dump(scene_structure, json_file, indent=2)
+        print(f"Object structure saved to {json_out}\n")
+    
+        annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
+        ann_out = os.path.join(outdir, "scene_annotation.json")
+        with open(ann_out, "w") as ann_file:
+            json.dump(annotation, ann_file, indent=2)
+        print(f"Annotation saved to {ann_out}\n")
+
 
 ##############################################################################
 # Modified run_scene_demo: Integrates scene creation and display.
@@ -1044,7 +1117,7 @@ def demo_question_parallel_perp_lines(answer=True,
     margin = 5
     test_parallel = random.choice([True, False])
     relation_text = "parallel" if test_parallel else "perpendicular"
-    question_text = f"Are there any {relation_text} lines in the image?"
+    question_text = f"Are there any {relation_text} lines in the image? Consider lines that are not touching as well."
 
     # New option: if answer is True, with 2% chance each, generate a rectangle, bars, or axis.
     if answer:
@@ -1227,13 +1300,12 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
 def demo_question_intersect_objects(answer=True,
                                     outdir="demo_output/question_intersect_objects",
                                     canvas_size=(100, 100)):
-    import math, random
     width, height = canvas_size
     canvas = (0, width, 0, height)
     
     # Candidate types; note that "Circle" is treated as an oval,
     # and "Square", "Rectangle", "Triangle" and "Polygon" are treated as polygons.
-    candidate_types = ["Line", "Oval", "Circle", "Rectangle", "Square", "Triangle", "Polygon"]
+    candidate_types = ["Line", "Oval", "Circle", "Rectangle", "Square", "Triangle"]
     type1 = random.choice(candidate_types)
     type2 = random.choice(candidate_types)
     question_text = f"Does an {type1} intersect with an {type2}?"
@@ -1269,8 +1341,8 @@ def demo_question_intersect_objects(answer=True,
             center = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
             pts = []
             for _ in range(3):
-                pts.append((center[0] + random.uniform(-10, 10),
-                            center[1] + random.uniform(-10, 10)))
+                pts.append((center[0] + random.uniform(-0.3 * width, 0.3 * width),
+                            center[1] + random.uniform(-0.3 * height, 0.3 * height)))
             return {"vertices": pts}
         elif shape == "Polygon":
             # Generate a 5-vertex polygon by perturbing points around a circle.
@@ -1547,6 +1619,7 @@ def demo_question_intersect_objects(answer=True,
     for _ in range(MAX_INITIAL_TRIES):
         p1 = gen_params(type1)
         p2 = gen_params(type2)
+
         does_int = intersect(p1, type1, p2, type2)
         if answer and does_int:
             params1, params2 = p1, p2
@@ -1556,7 +1629,6 @@ def demo_question_intersect_objects(answer=True,
             break
     if params1 is None or params2 is None:
         raise Exception("Could not generate initial parameters meeting the condition.")
-    
     # ------------------------
     # "Wiggle" the parameters so the scene isn’t too static.
     WIGGLE_ATTEMPTS = 10
@@ -1578,23 +1650,76 @@ def demo_question_intersect_objects(answer=True,
             new_p2 = wiggle_params(params2, type2)
             if not intersect(params1, type1, new_p2, type2):
                 params2 = new_p2
-    
+    print(params1, params2)
     # ------------------------
     # Build the plan. We follow the same plan format as used in other demos:
     # a dictionary mapping object type to a list of parameter dictionaries.
-    plan = {type1: [params1], type2: [params2]}
-    
-    # Generate and display the scene.
-    scene = create_scene(plan, canvas=canvas)
+    # If both shapes are the same type, combine them into one plan entry;
+    # otherwise, create separate entries.
+    if type1 == type2:
+        plan = {type1: [params1, params2]}
+    else:
+        plan = {type1: [params1], type2: [params2]}
+    MAX_RETRY = 25
+    final_scene = None
+    for attempt in range(MAX_RETRY):
+        temp_scene = create_scene(plan, canvas=canvas,avoid_types=["BarGraph", "Bars", "Axis"])
+        if answer:
+            final_scene = temp_scene
+            break
+        # For false answer, check all relevant objects for intersections.
+        relevant_objs = []
+        for obj in temp_scene:
+            if isinstance(obj, LineLow):
+                relevant_objs.append(("Line", {"p1": obj.p1, "p2": obj.p2}))
+            elif isinstance(obj, OvalLow):
+                relevant_objs.append(("Oval", {"center": obj.center, "width": obj.width, "height": obj.height, "angle": obj.angle}))
+            elif isinstance(obj, RectangleObj):
+                # Treat as polygon
+                vs = []
+                for ln in obj.sub_references:
+                    vs.append(ln.p1)
+                relevant_objs.append(("polygon", {"vertices": vs}))
+            elif isinstance(obj, TriangleObj):
+                relevant_objs.append(("polygon", {"vertices": obj.vertices}))
+            elif isinstance(obj, PolygonObj):
+                # Build polygon vertices from line sub-refs
+                vs = []
+                for ln in obj.sub_references[:obj.sides]:
+                    vs.append(ln.p1)
+                relevant_objs.append(("polygon", {"vertices": vs}))
+
+        any_intersect = False
+        for i in range(len(relevant_objs)):
+            for j in range(i+1, len(relevant_objs)):
+                if intersect(relevant_objs[i][1], relevant_objs[i][0],
+                             relevant_objs[j][1], relevant_objs[j][0]):
+                    any_intersect = True
+                    break
+            if any_intersect:
+                break
+
+        if not any_intersect:
+            final_scene = temp_scene
+            break
+
+    scene = final_scene if final_scene else None
     display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
 
 ##############################################################################
 # Main Demo: Run one demo per question.
 ##############################################################################
 if __name__ == "__main__":
-    CANVAS_SIZE = (100, 100)  # width, height
-    # Uncomment any of the following to test:
-    #demo_question_object(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
-    #demo_question_parallel_perp_lines(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
-    #demo_question_arrow_direction(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
-    demo_question_intersect_objects(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
+
+    dataset_size = 10000  # Change this to the desired number of scenes
+    funcs = [
+        demo_question_object,
+        demo_question_parallel_perp_lines,
+        demo_question_arrow_direction,
+        demo_question_intersect_objects
+    ]
+    CANVAS_SIZE = (100, 100)
+
+    for i in range(dataset_size):
+        func = random.choice(funcs)
+        func(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
