@@ -1104,7 +1104,7 @@ def demo_question_object(answer=True, outdir="demo_output/question_object", canv
         for obj in scene:
             if obj.ALIAS == obj_type:
                 raise Exception(f"Error: {obj_type} instance found when answer should be false.")
-    question_text = f"Is there a {obj_type} in the image?"
+    question_text = f"Is there a {obj_type} in the image? Do not consider objects part of larger objects."
     display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
 # 2 "Are there any parallel/perpendicular lines in the image?"
 def demo_question_parallel_perp_lines(answer=True,
@@ -1113,7 +1113,7 @@ def demo_question_parallel_perp_lines(answer=True,
     width, height = canvas_size
     canvas = (0, width, 0, height)
     epsilon = 4
-    MAX_RETRY = 50
+    MAX_RETRY =  100
     margin = 5
     test_parallel = random.choice([True, False])
     relation_text = "parallel" if test_parallel else "perpendicular"
@@ -1231,7 +1231,7 @@ def demo_question_parallel_perp_lines(answer=True,
 
 # 3. "Are there any arrows pointing <upward | downward | leftward | rightward>?"
 def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arrow_direction", canvas_size=(100,100)):
-    MAX_RETRY = 5
+    MAX_RETRY = 50
     width, height = canvas_size
     canvas = (0, width, 0, height)
     direction = random.choice(["upward", "downward", "leftward", "rightward"])
@@ -1660,7 +1660,7 @@ def demo_question_intersect_objects(answer=True,
         plan = {type1: [params1, params2]}
     else:
         plan = {type1: [params1], type2: [params2]}
-    MAX_RETRY = 25
+    MAX_RETRY = 100
     final_scene = None
     for attempt in range(MAX_RETRY):
         temp_scene = create_scene(plan, canvas=canvas,avoid_types=["BarGraph", "Bars", "Axis"])
@@ -1711,7 +1711,7 @@ def demo_question_intersect_objects(answer=True,
 ##############################################################################
 if __name__ == "__main__":
 
-    dataset_size = 10000  # Change this to the desired number of scenes
+    dataset_size = 2500  # Change this to the desired number of scenes
     funcs = [
         demo_question_object,
         demo_question_parallel_perp_lines,
