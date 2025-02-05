@@ -14,7 +14,7 @@ from io import BytesIO
 
 # We disable interactive mode and enforce a specific backend for consistency.
 plt.ioff()
-matplotlib.use("TkAgg", force=True)
+matplotlib.use("Agg", force=True)
 
 ##############################################################################
 # ID Generator
@@ -1015,22 +1015,38 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None, c
         plt.close(fig)
         print(f"Scene image saved to {image_out}")
     
-        # Prepare scene structure and annotation.
-        scene_structure = [obj.to_dict() for obj in scene]
-        annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
+        # Get full absolute path to the saved image.
+        abs_image_path = os.path.abspath(image_out)
     
-        # Append a row to the Hugging Face dataset CSV with the path to the image.
-        hf_out = os.path.join(outdir, "huggingface_dataset.csv")
+        # Prepare the conversation in the exact same format:
+        #  - First message: user with question text
+        #  - Second message: user with image_path (full path)
+        #  - Third message: assistant with response "Yes" if answer is True and "No" otherwise
+        conversation = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": question,
+                    "type": "text"
+                },
+                {
+                    "role": "user",
+                    "content": abs_image_path,
+                    "type": "image_path"
+                },
+                {
+                    "role": "assistant",
+                    "content": "Yes" if answer else "No",
+                    "type": "text"
+                }
+            ]
+        }
+    
+        # Append the conversation as a JSONL record.
+        hf_out = os.path.join(outdir, "huggingface_dataset.jsonl")
         file_mode = "a" if os.path.exists(hf_out) else "w"
-        with open(hf_out, file_mode, newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=["answer", "question", "image"])
-            if file_mode == "w":
-                writer.writeheader()
-            writer.writerow({
-                "answer": str(answer),
-                "question": str(question),
-                "image": image_out
-            })
+        with open(hf_out, file_mode, encoding='utf-8') as jsonlfile:
+            jsonlfile.write(json.dumps(conversation) + "\n")
     
         print(f"HuggingFace-style dataset row appended to {hf_out}")
     
@@ -1065,13 +1081,7 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None, c
     
         print(f"\nScene saved to {image_out}\n")
     
-        scene_structure = [obj.to_dict() for obj in scene]
-        json_out = os.path.join(outdir, "scene_structure.json")
-        with open(json_out, "w") as json_file:
-            json.dump(scene_structure, json_file, indent=2)
-        print(f"Object structure saved to {json_out}\n")
-    
-        annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
+        annotation = {"question": question, "answer": answer}
         ann_out = os.path.join(outdir, "scene_annotation.json")
         with open(ann_out, "w") as ann_file:
             json.dump(annotation, ann_file, indent=2)
