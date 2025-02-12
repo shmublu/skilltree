@@ -1673,14 +1673,21 @@ def demo_question_intersect_objects(answer=True,
                 params2 = new_p2
     print(params1, params2)
     # ------------------------
-    # Build the plan. We follow the same plan format as used in other demos:
-    # a dictionary mapping object type to a list of parameter dictionaries.
-    # If both shapes are the same type, combine them into one plan entry;
-    # otherwise, create separate entries.
+    if type1 == "Square":
+        type1 = "Rectangle"
+    if type2 == "Square":
+        type2 = "Rectangle"
+    if type1 == "Circle":
+        type1 = "Oval"
+    if type2 == "Circle":
+        type2 = "Oval"
+
+
     if type1 == type2:
         plan = {type1: [params1, params2]}
     else:
         plan = {type1: [params1], type2: [params2]}
+        print(plan)
     MAX_RETRY = 100
     final_scene = None
     for attempt in range(MAX_RETRY):
