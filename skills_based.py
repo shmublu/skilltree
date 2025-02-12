@@ -30,6 +30,10 @@ class UniqueIDGenerator:
         UniqueIDGenerator.counters[alias] += 1
         return this_id
 
+    @staticmethod
+    def reset_counters():
+        UniqueIDGenerator.counters.clear()
+
 QUESTIONS = {
     "Is there an <object type> in the image?": [],
     "Are there any parallel lines in the image?": [],
@@ -181,11 +185,16 @@ class LineLow(PlotObject):
             self.p2 = (cx + dx, cy + dy)
         super().assign_geometry()
 
-    def perform_skills(self):
-        print(f"RecognizeInstanceLine => Line#{self.obj_id}")
-        print(f"LocalizeLine => Line#{self.obj_id} (Endpoints: {self.p1}, {self.p2})")
+    def perform_skills(self, verbose=False):
+        messages = []
+        messages.append(f"RecognizeInstanceLine => Line#{self.obj_id}")
+        messages.append(f"LocalizeLine => Line#{self.obj_id} (Endpoints: {self.p1}, {self.p2})")
         length, angle = get_line_length_and_angle(self.p1, self.p2)
-        print(f"MeasureLine => Line#{self.obj_id} (Length={length:.1f}, Angle={angle:.1f})")
+        messages.append(f"MeasureLine => Line#{self.obj_id} (Length={length:.1f}, Angle={angle:.1f})")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
 
     def render(self, ax):
         ax.plot([self.p1[0], self.p2[0]],
@@ -237,11 +246,16 @@ class OvalLow(PlotObject):
             self.angle = ang
         super().assign_geometry()
 
-    def perform_skills(self):
-        print(f"RecognizeInstanceOval => Oval#{self.obj_id}")
-        print(f"LocalizeOval => Oval#{self.obj_id} (Center={self.center}, W={self.width}, H={self.height}, Angle={self.angle:.1f})")
+    def perform_skills(self, verbose=False):
+        messages = []
+        messages.append(f"RecognizeInstanceOval => Oval#{self.obj_id}")
+        messages.append(f"LocalizeOval => Oval#{self.obj_id} (Center={self.center}, W={self.width}, H={self.height}, Angle={self.angle:.1f})")
         area = math.pi * (self.width / 2.0) * (self.height / 2.0)
-        print(f"MeasureOval => Oval#{self.obj_id} (Area={area:.1f})")
+        messages.append(f"MeasureOval => Oval#{self.obj_id} (Area={area:.1f})")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
 
     def render(self, ax):
         e = Ellipse(xy=self.center,
@@ -327,18 +341,23 @@ class RectangleObj(PlotObject):
                 lines[i]._geometry_locked = True
         super().assign_geometry()
 
-    def perform_skills(self):
+    def perform_skills(self, verbose=False):
+        messages = []
+        # Collect output from sub-references
         for sub in self.sub_references:
-            sub.perform_skills()
+            messages.append(sub.perform_skills(verbose=verbose))
         line_ids = [sub.obj_id for sub in self.sub_references if isinstance(sub, LineLow)]
         if line_ids:
-            print(f"GroupLine => Rectangle#{self.obj_id} from lineIDs={line_ids}")
-        print(f"RecognizeInstanceRectangle => Rectangle#{self.obj_id}")
-        print(f"LocalizeRectangle => Rectangle#{self.obj_id} (W={self.width:.1f}, H={self.height:.1f}, Angle={self.angle:.1f})")
+            messages.append(f"GroupLine => Rectangle#{self.obj_id} from lineIDs={line_ids}")
+        messages.append(f"RecognizeInstanceRectangle => Rectangle#{self.obj_id}")
+        messages.append(f"LocalizeRectangle => Rectangle#{self.obj_id} (W={self.width:.1f}, H={self.height:.1f}, Angle={self.angle:.1f})")
         area = self.width * self.height
         perimeter = 2.0 * (self.width + self.height)
-        print(f"MeasureRectangle => Rectangle#{self.obj_id} (Area={area:.1f}, Perimeter={perimeter:.1f})")
-
+        messages.append(f"MeasureRectangle => Rectangle#{self.obj_id} (Area={area:.1f}, Perimeter={perimeter:.1f})")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
     def render(self, ax):
         for sub in self.sub_references:
             sub.render(ax)
@@ -398,19 +417,25 @@ class TriangleObj(PlotObject):
                 lines[i]._geometry_locked = True
         super().assign_geometry()
 
-    def perform_skills(self):
+    def perform_skills(self, verbose=False):
+        messages = []
+        # Collect output from sub-references
         for sub in self.sub_references:
-            sub.perform_skills()
+            messages.append(sub.perform_skills(verbose=verbose))
         line_ids = [line.obj_id for line in self.sub_references if isinstance(line, LineLow)]
         if line_ids:
-            print(f"GroupLine => Triangle#{self.obj_id} from lineIDs={line_ids}")
-        print(f"RecognizeInstanceTriangle => Triangle#{self.obj_id}")
-        print(f"LocalizeTriangle => Triangle#{self.obj_id} (Vertices={self.vertices})")
+            messages.append(f"GroupLine => Triangle#{self.obj_id} from lineIDs={line_ids}")
+        messages.append(f"RecognizeInstanceTriangle => Triangle#{self.obj_id}")
+        messages.append(f"LocalizeTriangle => Triangle#{self.obj_id} (Vertices={self.vertices})")
         x1, y1 = self.vertices[0]
         x2, y2 = self.vertices[1]
         x3, y3 = self.vertices[2]
         area = abs(x1*(y2-y3) + x2*(y3-y1) + x3*(y1-y2)) / 2.0
-        print(f"MeasureTriangle => Triangle#{self.obj_id} (Area={area:.1f})")
+        messages.append(f"MeasureTriangle => Triangle#{self.obj_id} (Area={area:.1f})")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
 
     def render(self, ax):
         for sub in self.sub_references:
@@ -480,18 +505,23 @@ class PolygonObj(PlotObject):
                 lines[j]._geometry_locked = True
         super().assign_geometry()
 
-    def perform_skills(self):
+    def perform_skills(self, verbose=False):
+        messages = []
+        # Get the lines used in the polygon (limit to self.sides)
         used_lines = [ln for ln in self.sub_references[:self.sides] if isinstance(ln, LineLow)]
         for ln in used_lines:
-            ln.perform_skills()
+            messages.append(ln.perform_skills(verbose=verbose))
         line_ids = [ln.obj_id for ln in used_lines]
         if line_ids:
-            print(f"GroupLine => Polygon#{self.obj_id} from lineIDs={line_ids}")
-        print(f"RecognizeInstancePolygon => Polygon#{self.obj_id}")
-        print(f"LocalizePolygon => Polygon#{self.obj_id} (Sides={self.sides}, Angle={self.angle:.1f})")
-        area = 0.5 * self.sides * (self.radius**2) * math.sin(2*math.pi/self.sides)
-        print(f"MeasurePolygon => Polygon#{self.obj_id} (Area={area:.1f})")
-
+            messages.append(f"GroupLine => Polygon#{self.obj_id} from lineIDs={line_ids}")
+        messages.append(f"RecognizeInstancePolygon => Polygon#{self.obj_id}")
+        messages.append(f"LocalizePolygon => Polygon#{self.obj_id} (Sides={self.sides}, Angle={self.angle:.1f})")
+        area = 0.5 * self.sides * (self.radius ** 2) * math.sin(2 * math.pi / self.sides)
+        messages.append(f"MeasurePolygon => Polygon#{self.obj_id} (Area={area:.1f})")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
     def render(self, ax):
         line_count = self.sides
         used_lines = self.sub_references[:line_count]
@@ -567,19 +597,25 @@ class ArrowObj(PlotObject):
             lines[2]._geometry_locked = True
         super().assign_geometry()
 
-    def perform_skills(self):
+    def perform_skills(self, verbose=False):
+        messages = []
+        # Process all sub-references first.
         for sub in self.sub_references:
-            sub.perform_skills()
+            messages.append(sub.perform_skills(verbose=verbose))
         line_ids = [ln.obj_id for ln in self.sub_references if isinstance(ln, LineLow)]
         if line_ids:
-            print(f"GroupLine => Arrow#{self.obj_id} from lineIDs={line_ids}")
-        print(f"RecognizeInstanceArrow => Arrow#{self.obj_id}")
-        print(f"LocalizeArrow => Arrow#{self.obj_id} (Length={self.length:.1f}, Angle={self.angle:.1f})")
-        print(f"MeasureArrow => Arrow#{self.obj_id} (ShaftLength={self.length:.1f})")
+            messages.append(f"GroupLine => Arrow#{self.obj_id} from lineIDs={line_ids}")
+        messages.append(f"RecognizeInstanceArrow => Arrow#{self.obj_id}")
+        messages.append(f"LocalizeArrow => Arrow#{self.obj_id} (Length={self.length:.1f}, Angle={self.angle:.1f})")
+        messages.append(f"MeasureArrow => Arrow#{self.obj_id} (ShaftLength={self.length:.1f})")
         rad = math.radians(self.angle)
         dx = math.cos(rad)
         dy = math.sin(rad)
-        print(f"ArrowDirection => Arrow#{self.obj_id} (Vector=({dx:.2f}, {dy:.2f}))")
+        messages.append(f"ArrowDirection => Arrow#{self.obj_id} (Vector=({dx:.2f}, {dy:.2f}))")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
 
     def render(self, ax):
         for sub in self.sub_references:
@@ -654,15 +690,20 @@ class BarsObj(PlotObject):
             self._geometry_locked = True
         super().assign_geometry()
 
-    def perform_skills(self):
+    def perform_skills(self, verbose=False):
+        messages = []
         for sub in self.sub_references:
-            sub.perform_skills()
+            messages.append(sub.perform_skills(verbose=verbose))
         rect_ids = [sub.obj_id for sub in self.sub_references if isinstance(sub, RectangleObj)]
         if rect_ids:
-            print(f"GroupRectangle => Bars#{self.obj_id} from rectangleIDs={rect_ids}")
-        print(f"RecognizeInstanceBars => Bars#{self.obj_id}")
-        print(f"LocalizeBars => Bars#{self.obj_id} (Positions for each rectangle)")
-        print(f"MeasureBars => Bars#{self.obj_id} (Heights, widths, spacing, etc.)")
+            messages.append(f"GroupRectangle => Bars#{self.obj_id} from rectangleIDs={rect_ids}")
+        messages.append(f"RecognizeInstanceBars => Bars#{self.obj_id}")
+        messages.append(f"LocalizeBars => Bars#{self.obj_id} (Positions for each rectangle)")
+        messages.append(f"MeasureBars => Bars#{self.obj_id} (Heights, widths, spacing, etc.)")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
 
     def render(self, ax):
         for sub in self.sub_references:
@@ -747,16 +788,25 @@ class AxisObj(PlotObject):
             self._geometry_locked = True
         super().assign_geometry()
 
-    def perform_skills(self):
-        self.line.perform_skills()
+    def perform_skills(self, verbose=False):
+        messages = []
+        messages.append(self.line.perform_skills(verbose=verbose))
         for tline in self.ticks:
-            tline.perform_skills()
-        print(f"GroupLine => Axis#{self.obj_id} from lineIDs=[{self.line.obj_id}" +
-              "".join(f", {t.obj_id}" for t in self.ticks) + "]")
-        print(f"RecognizeInstanceAxis => Axis#{self.obj_id}")
-        print(f"LocalizeAxis => Axis#{self.obj_id} (Endpoints={self.p1}, {self.p2})")
+            messages.append(tline.perform_skills(verbose=verbose))
+        group_line_msg = (
+            f"GroupLine => Axis#{self.obj_id} from lineIDs=[{self.line.obj_id}"
+            + "".join(f", {t.obj_id}" for t in self.ticks)
+            + "]"
+        )
+        messages.append(group_line_msg)
+        messages.append(f"RecognizeInstanceAxis => Axis#{self.obj_id}")
+        messages.append(f"LocalizeAxis => Axis#{self.obj_id} (Endpoints={self.p1}, {self.p2})")
         length, angle = get_line_length_and_angle(self.p1, self.p2)
-        print(f"MeasureAxis => Axis#{self.obj_id} (Length={length:.1f}, Angle={angle:.1f})")
+        messages.append(f"MeasureAxis => Axis#{self.obj_id} (Length={length:.1f}, Angle={angle:.1f})")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
 
     def render(self, ax):
         self.line.render(ax)
@@ -838,18 +888,27 @@ class BarGraphObj(PlotObject):
             self._geometry_locked = True
         super().assign_geometry()
 
-    def perform_skills(self):
-        self.axis_obj_x.perform_skills()
+    def perform_skills(self, verbose=False):
+        messages = []
+        messages.append(self.axis_obj_x.perform_skills(verbose=verbose))
         if self.axis_obj_y:
-            self.axis_obj_y.perform_skills()
-            print(f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id}, {self.axis_obj_y.obj_id}]")
+            messages.append(self.axis_obj_y.perform_skills(verbose=verbose))
+            messages.append(
+                f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id}, {self.axis_obj_y.obj_id}]"
+            )
         else:
-            print(f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id}]")
-        self.bars_obj.perform_skills()
-        print(f"GroupBars => BarGraph#{self.obj_id} from BarsIDs=[{self.bars_obj.obj_id}]")
-        print(f"RecognizeInstanceBarGraph => BarGraph#{self.obj_id}")
-        print(f"LocalizeBarGraph => BarGraph#{self.obj_id} (Overall bounding region, etc.)")
-        print(f"MeasureBarGraph => BarGraph#{self.obj_id} (Number of bars, axis length, etc.)")
+            messages.append(
+                f"GroupAxis => BarGraph#{self.obj_id} from AxisIDs=[{self.axis_obj_x.obj_id}]"
+            )
+        messages.append(self.bars_obj.perform_skills(verbose=verbose))
+        messages.append(f"GroupBars => BarGraph#{self.obj_id} from BarsIDs=[{self.bars_obj.obj_id}]")
+        messages.append(f"RecognizeInstanceBarGraph => BarGraph#{self.obj_id}")
+        messages.append(f"LocalizeBarGraph => BarGraph#{self.obj_id} (Overall bounding region, etc.)")
+        messages.append(f"MeasureBarGraph => BarGraph#{self.obj_id} (Number of bars, axis length, etc.)")
+        result = "\n".join(messages)
+        if verbose:
+            print(result)
+        return result
 
     def render(self, ax):
         for sub in self.sub_references:
@@ -943,7 +1002,8 @@ def build_scene_from_plan(high_level_objects):
 ##############################################################################
 # New Function: Create Scene (scene construction without display/saving)
 ##############################################################################
-def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=False):
+def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=True):
+    UniqueIDGenerator.reset_counters()
     if avoid_types is None:
         avoid_types = ["BarGraph", "Bars", "Axis"]
     scene = build_scene_from_plan(plan)
@@ -963,12 +1023,13 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Fal
     for obj in scene:
         obj.assign_geometry()
 
+    skill_output = ""
     for obj in scene:
-        obj.perform_skills()
+        skill_output += "\n" + obj.perform_skills()
 
     if not allow_partial:
         adjust_scene(scene, canvas=canvas)
-    return scene
+    return scene, skill_output
 
 ##############################################################################
 # New Function: Display Scene and Save Structure
@@ -1001,16 +1062,17 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
     for obj in scene:
         obj.render(ax)
     
-    # Add a small amount of random noise to the image.
-    xs = sorted(ax.get_xlim())
-    ys = sorted(ax.get_ylim())
-    total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
-    noise_level = 0.01
-    nn = int(total_pixels * noise_level)
-    for _ in range(nn):
-        xx = random.randint(int(xs[0]), int(xs[1]) - 1)
-        yy = random.randint(int(ys[0]), int(ys[1]) - 1)
-        ax.plot(xx, yy, 'ks', markersize=1)
+    # Add noise to the image 50% of the time to make it more realistic.
+    if random.random() < 0.8:
+        xs = sorted(ax.get_xlim())
+        ys = sorted(ax.get_ylim())
+        total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
+        noise_level = 0.002
+        nn = int(total_pixels * noise_level)
+        for _ in range(nn):
+            xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+            yy = random.randint(int(ys[0]), int(ys[1]) - 1)
+            ax.plot(xx, yy, 'ks', markersize=1)
     
     # If visualize flag is true, display the image with a title before saving.
     if visualize:
@@ -1026,9 +1088,17 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
         plt.show()  # This call will block until the window is closed.
     
     # Save the scene image.
-    fig.savefig(image_out, dpi=120)
+    fig.savefig(image_out, dpi=120, bbox_inches='tight', pad_inches=0)
     print(f"Scene image saved to {image_out}")
-    
+    def replace_first_value(s):
+        if "True" in s:
+            # Replace only the first instance of "True"
+            return s.replace("True", "The answer is yes.", 1)
+        elif "False" in s:
+            # Replace only the first instance of "False"
+            return s.replace("False", "The answer is no.", 1)
+        else:
+            return s
     # Handle annotation saving based on the dataset type.
     if huggingface_dataset:
         abs_image_path = os.path.abspath(image_out)
@@ -1043,7 +1113,7 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
                 },
                 {
                     "role": "assistant",
-                    "content": "Yes" if answer else "No"
+                    "content": replace_first_value(answer)
                 }
             ]
         }
@@ -1082,13 +1152,13 @@ def demo_question_object(answer=True, outdir="demo_output/question_object", canv
         plan = {obj_type: random.randint(1, 2)}
     else:
         plan = {obj_type: 0}
-    scene = create_scene(plan, canvas=canvas, avoid_types=[] if answer else [obj_type])
+    scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[] if answer else [obj_type])
     if not answer:
         for obj in scene:
             if obj.ALIAS == obj_type:
                 raise Exception(f"Error: {obj_type} instance found when answer should be false.")
     question_text = f"Is there a {obj_type} in the image? Do not consider objects part of larger objects."
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
 # 2 "Are there any parallel/perpendicular lines in the image?"
 def demo_question_parallel_perp_lines(answer=True,
                                       outdir="demo_output/question_parallel_perp_lines",
@@ -1107,18 +1177,18 @@ def demo_question_parallel_perp_lines(answer=True,
         r = random.random()
         if r < 0.02:
             plan = {"Rectangle": 1}
-            scene = create_scene(plan, canvas=canvas, avoid_types=[])
-            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+            scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
+            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
             return
         elif r < 0.04:
             plan = {"Bars": 1}
-            scene = create_scene(plan, canvas=canvas, avoid_types=[])
-            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+            scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
+            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
             return
         elif r < 0.06:
             plan = {"Axis": 1}
-            scene = create_scene(plan, canvas=canvas, avoid_types=[])
-            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+            scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
+            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
             return
 
     def compute_endpoint(p, angle, length):
@@ -1159,7 +1229,7 @@ def demo_question_parallel_perp_lines(answer=True,
             {"p1": p1, "p2": compute_endpoint(p1, angle1, len1)},
             {"p1": p2, "p2": compute_endpoint(p2, angle2, len2)}
         ]}
-        scene = create_scene(plan, canvas=canvas, avoid_types=[])
+        scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
 
         # Gather all lines from the generated scene using the iterative approach.
         all_lines = []
@@ -1167,8 +1237,6 @@ def demo_question_parallel_perp_lines(answer=True,
             all_lines.extend(gather_all_lines(obj))
         if len(all_lines) < 2:
             continue
-
-        print(all_lines)
 
         # Extract angles and sort them for efficient searching.
         angles = [get_line_length_and_angle(ln.p1, ln.p2)[1] for ln in all_lines]
@@ -1210,7 +1278,7 @@ def demo_question_parallel_perp_lines(answer=True,
         if (answer and relation_found) or (not answer and not relation_found):
             break
 
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
 
 # 3. "Are there any arrows pointing <upward | downward | leftward | rightward>?"
 def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arrow_direction", canvas_size=(100,100)):
@@ -1258,7 +1326,7 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
                     "length": length,
                     "start": (start_x, start_y)
                 }]}
-        scene = create_scene(plan, canvas=canvas)
+        scene, skill_output = create_scene(plan, canvas=canvas)
         if not answer:
             # If scene is empty or there is no arrow, it's acceptable.
             arrow_objs = [obj for obj in scene if obj.ALIAS == "Arrow"]
@@ -1277,7 +1345,7 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
         break
 
     question_text = f"Is there an arrow pointing {direction}?"
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
 
 # 4. Does a <shape 1> intersect with a <shape 2>?
 def demo_question_intersect_objects(answer=True,
@@ -1632,7 +1700,6 @@ def demo_question_intersect_objects(answer=True,
             new_p2 = wiggle_params(params2, type2)
             if not intersect(params1, type1, new_p2, type2):
                 params2 = new_p2
-    print(params1, params2)
     # ------------------------
     if type1 == "Square":
         type1 = "Rectangle"
@@ -1663,11 +1730,10 @@ def demo_question_intersect_objects(answer=True,
         plan = {type1: [params1, params2]}
     else:
         plan = {type1: [params1], type2: [params2]}
-        print(plan)
-    MAX_RETRY = 100
+    MAX_RETRY = 150
     final_scene = None
     for attempt in range(MAX_RETRY):
-        temp_scene = create_scene(plan, canvas=canvas,avoid_types=["BarGraph", "Bars", "Axis"])
+        temp_scene, skill_output = create_scene(plan, canvas=canvas,avoid_types=["BarGraph", "Bars", "Axis"])
         if answer:
             final_scene = temp_scene
             break
@@ -1709,7 +1775,7 @@ def demo_question_intersect_objects(answer=True,
             break
 
     scene = final_scene if final_scene else None
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=answer, canvas=canvas)
+    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
 
 ##############################################################################
 # Main Demo: Run one demo per question.
@@ -1718,13 +1784,20 @@ if __name__ == "__main__":
 
     dataset_size = 2500  # Change this to the desired number of scenes
     funcs = [
-        #demo_question_object,
-        #demo_question_parallel_perp_lines,
-        #demo_question_arrow_direction,
+        demo_question_object,
+        demo_question_parallel_perp_lines,
+        demo_question_arrow_direction,
         demo_question_intersect_objects
     ]
     CANVAS_SIZE = (100, 100)
 
     for i in range(dataset_size):
+        width = random.randint(100, 400)
+
+        height_lower = max(100, math.ceil(width / 3))
+        height_upper = min(400, 3 * width)
+        height = random.randint(height_lower, height_upper)
+
+        CANVAS_SIZE = (width, height)
         func = random.choice(funcs)
         func(answer=random.choice([True, False]), canvas_size=CANVAS_SIZE)
