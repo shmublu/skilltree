@@ -975,130 +975,91 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Fal
 ##############################################################################
 
 def display_and_save_scene(scene, outdir="output", question=None, answer=None,
-                             canvas=(0, 100, 0, 100), huggingface_dataset=True, visualize=True):
-    # Helper to visualize scene with overlaid question and answer
-    def visualize_scene(fig, question, answer):
-        print("Displaying image")
-        # Add text overlay on the figure; position can be adjusted as needed.
-        text_question = fig.text(0.5, 0.95, f"Question: {question}", ha="center",
-                                 fontsize=16, color="black", weight="bold")
-        text_answer = fig.text(0.5, 0.05, f"Answer: {answer}", ha="center",
-                               fontsize=16, color="black", weight="bold")
-        plt.show()
-        # Close the figure immediately after showing to prevent extra windows.
-        plt.close(fig)
-
+                           canvas=(0, 100, 0, 100), huggingface_dataset=True, visualize=False):
+    # Determine output file/directory settings based on the dataset type.
     if huggingface_dataset:
-        # Ensure the output directories exist.
         outdir = "output"
         image_folder = os.path.join(outdir, "images")
         os.makedirs(outdir, exist_ok=True)
         os.makedirs(image_folder, exist_ok=True)
-        
-        # Generate a unique filename using uuid4.
         unique_id = uuid.uuid4().hex
         image_filename = f"scene_{unique_id}.png"
         image_out = os.path.join(image_folder, image_filename)
-        
-        # Create figure and render the scene.
-        fig, ax = plt.subplots(figsize=(5, 5))
-        x_min, x_max, y_min, y_max = canvas
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-        ax.invert_yaxis()
-        ax.set_aspect("equal")
-        ax.axis("off")
-    
-        for obj in scene:
-            obj.render(ax)
-    
-        # Optionally add some noise to the image.
-        xs = sorted(ax.get_xlim())
-        ys = sorted(ax.get_ylim())
-        total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
-        noise_level = 0.01
-        nn = int(total_pixels * noise_level)
-        for _ in range(nn):
-            xx = random.randint(int(xs[0]), int(xs[1]) - 1)
-            yy = random.randint(int(ys[0]), int(ys[1]) - 1)
-            ax.plot(xx, yy, 'ks', markersize=1)
-    
-        # First, save the scene image without text overlays.
-        plt.savefig(image_out, dpi=120)
-    
-        # If visualization is desired, display the image with overlays,
-        # and then immediately close the figure to avoid duplicate windows.
-        if visualize:
-            visualize_scene(fig, question, answer)
-        else:
-            plt.close(fig)
-    
-        print(f"Scene image saved to {image_out}")
-    
-        # Prepare scene structure and annotation.
-        scene_structure = [obj.to_dict() for obj in scene]
-        annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
-    
-        # Append a row to the Hugging Face dataset CSV with the path to the image.
-        hf_out = os.path.join(outdir, "huggingface_dataset.csv")
-        file_mode = "a" if os.path.exists(hf_out) else "w"
-        with open(hf_out, file_mode, newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=["answer", "question", "image"])
-            if file_mode == "w":
-                writer.writeheader()
-            writer.writerow({
-                "answer": str(answer),
-                "question": str(question),
-                "image": image_out
-            })
-    
-        print(f"HuggingFace-style dataset row appended to {hf_out}")
-
     else:
-        # Non Hugging Face dataset branch: Save images and annotations as separate files.
         os.makedirs(outdir, exist_ok=True)
-    
-        fig, ax = plt.subplots(figsize=(5, 5))
-        x_min, x_max, y_min, y_max = canvas
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-        ax.invert_yaxis()
-        ax.set_aspect("equal")
-        ax.axis("off")
-    
-        for obj in scene:
-            obj.render(ax)
-    
-        xs = sorted(ax.get_xlim())
-        ys = sorted(ax.get_ylim())
-        total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
-        noise_level = 0.01
-        nn = int(total_pixels * noise_level)
-        for _ in range(nn):
-            xx = random.randint(int(xs[0]), int(xs[1]) - 1)
-            yy = random.randint(int(ys[0]), int(ys[1]) - 1)
-            ax.plot(xx, yy, 'ks', markersize=1)
-    
-        if visualize:
-            visualize_scene(fig, question, answer)
-    
         image_out = os.path.join(outdir, "scene.png")
-        plt.savefig(image_out, dpi=120)
-        plt.close(fig)
     
-        print(f"\nScene saved to {image_out}\n")
+    # Create figure and render the scene.
+    fig, ax = plt.subplots(figsize=(5, 5))
+    x_min, x_max, y_min, y_max = canvas
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.invert_yaxis()
+    ax.set_aspect("equal")
+    ax.axis("off")
     
-        scene_structure = [obj.to_dict() for obj in scene]
-        json_out = os.path.join(outdir, "scene_structure.json")
-        with open(json_out, "w") as json_file:
-            json.dump(scene_structure, json_file, indent=2)
-        print(f"Object structure saved to {json_out}\n")
+    for obj in scene:
+        obj.render(ax)
     
-        annotation = {"question": question, "answer": answer, "scene_structure": scene_structure}
+    # Add a small amount of random noise to the image.
+    xs = sorted(ax.get_xlim())
+    ys = sorted(ax.get_ylim())
+    total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
+    noise_level = 0.01
+    nn = int(total_pixels * noise_level)
+    for _ in range(nn):
+        xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+        yy = random.randint(int(ys[0]), int(ys[1]) - 1)
+        ax.plot(xx, yy, 'ks', markersize=1)
+    
+    # If visualize flag is true, display the image with a title before saving.
+    if visualize:
+        title_text = ""
+        if question:
+            title_text += f"Question: {question}"
+        if answer is not None:
+            if title_text:
+                title_text += " | "
+            title_text += f"Answer: {answer}"
+        if title_text:
+            ax.set_title(title_text)
+        plt.show()  # This call will block until the window is closed.
+    
+    # Save the scene image.
+    fig.savefig(image_out, dpi=120)
+    print(f"Scene image saved to {image_out}")
+    
+    # Handle annotation saving based on the dataset type.
+    if huggingface_dataset:
+        abs_image_path = os.path.abspath(image_out)
+        conversation = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_path", "content": abs_image_path},
+                        {"type": "text", "content": question}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": "Yes" if answer else "No"
+                }
+            ]
+        }
+        hf_out = os.path.join(outdir, "huggingface_dataset.jsonl")
+        file_mode = "a" if os.path.exists(hf_out) else "w"
+        with open(hf_out, file_mode, encoding="utf-8") as jsonlfile:
+            jsonlfile.write(json.dumps(conversation) + "\n")
+        print(f"HuggingFace-style dataset row appended to {hf_out}")
+    else:
+        annotation = {"question": question, "answer": answer}
         ann_out = os.path.join(outdir, "scene_annotation.json")
         with open(ann_out, "w") as ann_file:
             json.dump(annotation, ann_file, indent=2)
-        print(f"Annotation saved to {ann_out}\n")
+        print(f"Annotation saved to {ann_out}")
+    
+    plt.close(fig)
 
 ##############################################################################
 # Modified run_scene_demo: Integrates scene creation and display.
