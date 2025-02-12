@@ -974,16 +974,19 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Fal
 # New Function: Display Scene and Save Structure
 ##############################################################################
 
-def display_and_save_scene(scene, outdir="output", question=None, answer=None, canvas=(0, 100, 0, 100), huggingface_dataset=True, visualize=True):
+def display_and_save_scene(scene, outdir="output", question=None, answer=None,
+                             canvas=(0, 100, 0, 100), huggingface_dataset=True, visualize=True):
     # Helper to visualize scene with overlaid question and answer
     def visualize_scene(fig, question, answer):
+        print("Displaying image")
         # Add text overlay on the figure; position can be adjusted as needed.
-        text_question = fig.text(0.5, 0.95, f"Question: {question}", ha="center", fontsize=16, color="black", weight="bold")
-        text_answer = fig.text(0.5, 0.05, f"Answer: {answer}", ha="center", fontsize=16, color="black", weight="bold")
+        text_question = fig.text(0.5, 0.95, f"Question: {question}", ha="center",
+                                 fontsize=16, color="black", weight="bold")
+        text_answer = fig.text(0.5, 0.05, f"Answer: {answer}", ha="center",
+                               fontsize=16, color="black", weight="bold")
         plt.show()
-        # Remove the text so that the saved image is not affected.
-        text_question.remove()
-        text_answer.remove()
+        # Close the figure immediately after showing to prevent extra windows.
+        plt.close(fig)
 
     if huggingface_dataset:
         # Ensure the output directories exist.
@@ -1020,13 +1023,16 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None, c
             yy = random.randint(int(ys[0]), int(ys[1]) - 1)
             ax.plot(xx, yy, 'ks', markersize=1)
     
-        # Visualize scene with overlaid question and answer if requested.
+        # First, save the scene image without text overlays.
+        plt.savefig(image_out, dpi=120)
+    
+        # If visualization is desired, display the image with overlays,
+        # and then immediately close the figure to avoid duplicate windows.
         if visualize:
             visualize_scene(fig, question, answer)
+        else:
+            plt.close(fig)
     
-        # Save the scene image.
-        plt.savefig(image_out, dpi=120)
-        plt.close(fig)
         print(f"Scene image saved to {image_out}")
     
         # Prepare scene structure and annotation.
@@ -1047,7 +1053,7 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None, c
             })
     
         print(f"HuggingFace-style dataset row appended to {hf_out}")
-    
+
     else:
         # Non Hugging Face dataset branch: Save images and annotations as separate files.
         os.makedirs(outdir, exist_ok=True)
@@ -1073,7 +1079,6 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None, c
             yy = random.randint(int(ys[0]), int(ys[1]) - 1)
             ax.plot(xx, yy, 'ks', markersize=1)
     
-        # Visualize scene with overlaid question and answer if requested.
         if visualize:
             visualize_scene(fig, question, answer)
     
@@ -1386,7 +1391,6 @@ def demo_question_intersect_objects(answer=True,
             new_params["center"] = (params["center"][0] + random.uniform(-delta, delta),
                                     params["center"][1] + random.uniform(-delta, delta))
             new_params["angle"] = (params["angle"] + random.uniform(-angle_delta, angle_delta)) % 360
-            # Optionally wiggle width/height if desired.
         elif shape in ["Triangle", "Polygon"]:
             new_vertices = []
             for (x, y) in params["vertices"]:
@@ -1730,9 +1734,9 @@ if __name__ == "__main__":
 
     dataset_size = 2500  # Change this to the desired number of scenes
     funcs = [
-        demo_question_object,
-        demo_question_parallel_perp_lines,
-        demo_question_arrow_direction,
+        #demo_question_object,
+        #demo_question_parallel_perp_lines,
+        #demo_question_arrow_direction,
         demo_question_intersect_objects
     ]
     CANVAS_SIZE = (100, 100)
