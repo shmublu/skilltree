@@ -1682,6 +1682,21 @@ def demo_question_intersect_objects(answer=True,
     if type2 == "Circle":
         type2 = "Oval"
 
+    def interfering_types(type):
+        if type == "Line":
+            return ["Line", "Square", "Polygon", "Arrow", "Rectangle", "Triangle"]
+        elif type == "Oval":
+            return ["Circle", "Oval"]
+        elif type == "Circle":
+            return ["Circle"]
+        elif type == "Rectangle":
+            return ["Square", "Polygon", "Rectangle"]
+        elif type == "Triangle":
+            return ["Triangle", "Polygon"]
+        elif type == "Polygon":
+            return ["Polygon", "Triangle", "Rectangle", "Square"]
+        
+
 
     if type1 == type2:
         plan = {type1: [params1, params2]}
@@ -1697,20 +1712,21 @@ def demo_question_intersect_objects(answer=True,
             break
         # For false answer, check all relevant objects for intersections.
         relevant_objs = []
+        types = interfering_types(type1) + interfering_types(type2)
         for obj in temp_scene:
-            if isinstance(obj, LineLow):
+            if isinstance(obj, LineLow) and "Line" in types:
                 relevant_objs.append(("Line", {"p1": obj.p1, "p2": obj.p2}))
-            elif isinstance(obj, OvalLow):
+            elif isinstance(obj, OvalLow) and "Oval" in types:
                 relevant_objs.append(("Oval", {"center": obj.center, "width": obj.width, "height": obj.height, "angle": obj.angle}))
-            elif isinstance(obj, RectangleObj):
+            elif isinstance(obj, RectangleObj) and "Rectangle" in types:
                 # Treat as polygon
                 vs = []
                 for ln in obj.sub_references:
                     vs.append(ln.p1)
                 relevant_objs.append(("polygon", {"vertices": vs}))
-            elif isinstance(obj, TriangleObj):
+            elif isinstance(obj, TriangleObj) and "Triangle" in types:
                 relevant_objs.append(("polygon", {"vertices": obj.vertices}))
-            elif isinstance(obj, PolygonObj):
+            elif isinstance(obj, PolygonObj) and "Polygon" in types:
                 # Build polygon vertices from line sub-refs
                 vs = []
                 for ln in obj.sub_references[:obj.sides]:
