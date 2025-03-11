@@ -10,11 +10,12 @@ import uuid
 import csv
 import base64
 from io import BytesIO
+import re
 
 
 # We disable interactive mode and enforce a specific backend for consistency.
 plt.ioff()
-matplotlib.use("TkAgg", force=True)
+matplotlib.use("Agg", force=True)
 
 ##############################################################################
 # ID Generator
@@ -1006,6 +1007,8 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Tru
     UniqueIDGenerator.reset_counters()
     if avoid_types is None:
         avoid_types = ["BarGraph", "Bars", "Axis"]
+    else:
+        avoid_types.extend(["BarGraph", "Bars"])
     scene = build_scene_from_plan(plan)
     # Add extra distractor objects if scene is too small, avoiding types in avoid_types.
     total = len(scene)
@@ -1062,8 +1065,8 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
     for obj in scene:
         obj.render(ax)
     
-    # Add noise to the image 50% of the time to make it more realistic.
-    if random.random() < 0.8:
+    # Add noise to the image 70% of the time to make it more realistic.
+    if random.random() < 0.7:
         xs = sorted(ax.get_xlim())
         ys = sorted(ax.get_ylim())
         total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
@@ -1090,15 +1093,76 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
     # Save the scene image.
     fig.savefig(image_out, dpi=120, bbox_inches='tight', pad_inches=0)
     print(f"Scene image saved to {image_out}")
-    def replace_first_value(s):
-        if "True" in s:
-            # Replace only the first instance of "True"
-            return s.replace("True", "The answer is yes.", 1)
-        elif "False" in s:
-            # Replace only the first instance of "False"
-            return s.replace("False", "The answer is no.", 1)
-        else:
-            return s
+    
+    # Function for word-level synonym substitution.
+    def synonym_substitution(s):
+        # Dictionary mapping words to lists of synonyms (or alternative phrases).
+        substitutions = {
+            "reason": ["contemplate", "consider", "reflect on", "deliberate"],
+            "looks like": ["appears to be", "looks like", "is"],
+            "consider": ["regard", "view", "examine", "assess"],
+            "think": ["think", "believe", "suspect", "see that"],
+            "image": ["picture", "image", "scene"],
+            "picture": ["picture", "image", "scene"],
+        }
+        for word, alternatives in substitutions.items():
+            pattern = r'\b' + word + r'\b'
+            if re.search(pattern, s, flags=re.IGNORECASE):
+                replacement = random.choice(alternatives)
+                s = re.sub(pattern, replacement, s, count=1, flags=re.IGNORECASE)
+        return s
+
+    # Define neutral introduction sentences (do not include a yes/no conclusion).
+    neutral_intros = [
+        "I think there is geometry in the image. Let me decompose it. ",
+        "The image contains shapes. Before I analyze it at a high level, let me see what geometric shapes I can parse.",
+        "This image has geometric data in it.",
+        "The image you have provided contains a lot of information. Let me look more closely.",
+        "This looks like a 2D image.",
+        "This is a two dimensional geometry scene. The following is a summary of what is inside of it: ",
+        "This looks like a whiteboard-type image. Let me try to decompose it into its componenet parts. ",
+        "This picture contains 2D geometry. The following is my decomposition of it: ",
+        "Hmm, I think this is a 2D image. Based on that information, I will gain more information if I first look at its componenet parts."
+    ]
+    
+    # Define affirmative and negative conclusion sentences that take a stand.
+    affirmative_conclusions = [
+        "Thus, I conclude that the answer is yes.",
+        "After careful analysis, the answer is a definitive yes.",
+        "The evidence leads me to answer your question in the affirmative.",
+        "Overall, the evaluation confirms a yes.",
+        "In summary, the scene indicates that the answer is yes."
+    ]
+    
+    negative_conclusions = [
+        "Thus, I conclude that the answer is no.",
+        "After careful analysis, the answer is a definitive no.",
+        "The evidence of the decomposition leads me to affirm that the answer is no.",
+        "Overall, my evaluation confirms a no.",
+        "In summary, the image clearly indicates no."
+    ]
+    
+    # Build the final answer.
+    # 1. Start with a neutral introduction.
+    final_answer = random.choice(neutral_intros)
+    
+    # 2. Append any provided reasoning text (after synonym substitution).
+    if answer is None:
+        answer = ""
+    if answer.strip():
+        final_answer += synonym_substitution(answer) + " "
+    
+    # 3. Append a conclusion that explicitly takes a yes/no stand.
+    # Heuristic: If the original answer contains "True" or "yes" (and not "no"), use an affirmative conclusion;
+    # if it contains "False" or "no" (and not "yes"), use a negative conclusion.
+    if "True" in answer or ("yes" in answer.lower() and "no" not in answer.lower()):
+        final_answer += random.choice(affirmative_conclusions)
+    elif "False" in answer or ("no" in answer.lower() and "yes" not in answer.lower()):
+        final_answer += random.choice(negative_conclusions)
+    
+    # Apply synonym substitution to the whole final answer for extra variety.
+    final_answer = synonym_substitution(final_answer)
+    
     # Handle annotation saving based on the dataset type.
     if huggingface_dataset:
         abs_image_path = os.path.abspath(image_out)
@@ -1113,7 +1177,7 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
                 },
                 {
                     "role": "assistant",
-                    "content": replace_first_value(answer)
+                    "content": final_answer
                 }
             ]
         }
@@ -1123,7 +1187,7 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
             jsonlfile.write(json.dumps(conversation) + "\n")
         print(f"HuggingFace-style dataset row appended to {hf_out}")
     else:
-        annotation = {"question": question, "answer": answer}
+        annotation = {"question": question, "answer": final_answer}
         ann_out = os.path.join(outdir, "scene_annotation.json")
         with open(ann_out, "w") as ann_file:
             json.dump(annotation, ann_file, indent=2)
@@ -1782,7 +1846,7 @@ def demo_question_intersect_objects(answer=True,
 ##############################################################################
 if __name__ == "__main__":
 
-    dataset_size = 2500  # Change this to the desired number of scenes
+    dataset_size = 100000  # Change this to the desired number of scenes
     funcs = [
         demo_question_object,
         demo_question_parallel_perp_lines,
@@ -1792,7 +1856,7 @@ if __name__ == "__main__":
     CANVAS_SIZE = (100, 100)
 
     for i in range(dataset_size):
-        width = random.randint(100, 400)
+        width = random.randint(100, 500)
 
         height_lower = max(100, math.ceil(width / 3))
         height_upper = min(400, 3 * width)
