@@ -2,10 +2,9 @@ import random
 import math
 from geometry import UniqueIDGenerator
 from geometry.shapes import LineLow, OvalLow, RectangleObj, BarsObj, AxisObj, BarGraphObj, TriangleObj, PolygonObj, ArrowObj
-from geometry.base import skills_tree_to_text
-##############################################################################
-# High-level object type mapping.
-##############################################################################
+from geometry.base import skills_tree_to_text, collapse_skills_tree_single_line, count_low_level_nodes
+
+
 OBJECT_TYPES = {
     "Line": LineLow,
     "Oval": OvalLow,
@@ -17,9 +16,11 @@ OBJECT_TYPES = {
     "Polygon": PolygonObj,
     "Arrow": ArrowObj,
 }
-##############################################################################
-# Build a scene from a plan.
-##############################################################################
+import random
+import math
+from geometry import UniqueIDGenerator
+from geometry.shapes import LineLow, OvalLow, RectangleObj, BarsObj, AxisObj, BarGraphObj, TriangleObj, PolygonObj, ArrowObj
+
 def build_scene_from_plan(high_level_objects):
     scene = []
     for alias, spec in high_level_objects.items():
@@ -34,9 +35,6 @@ def build_scene_from_plan(high_level_objects):
                 scene.append(cls_(**params))
     return scene
 
-##############################################################################
-# Adjust the scene: Scale & Translate scene to fully fit within canvas.
-##############################################################################
 def adjust_scene(scene, canvas=(0, 100, 0, 100)):
     all_bboxes = [obj.get_bbox() for obj in scene]
     if not all_bboxes:
@@ -64,10 +62,72 @@ def adjust_scene(scene, canvas=(0, 100, 0, 100)):
     for obj in scene:
         obj.apply_transformation(transform)
 
-##############################################################################
-# Create Scene (scene construction without display/saving)
-##############################################################################
-def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=True):
+
+def merge_skill_lines(lines):
+    """
+    Merges multiple consolidated lines (strings) that belong to the same base object.
+    Each line is expected to have the format:
+      Header: (detail)
+    where the detail may begin with a grouping phrase (e.g. "from lineIDs=[0, 1, 2]").
+    
+    This function groups lines by their base header (e.g., "Rectangle 0"), then:
+      - Searches among the details for any grouping detail (i.e. a detail starting with "from")
+        and places it as the first item.
+      - All remaining details are combined into a comma‑separated list.
+    Returns a list of merged consolidated lines.
+    """
+    merged = {}
+    for line in lines:
+        line = line.strip()
+        # Split header and details at the first colon.
+        if ':' in line:
+            header_part, rest = line.split(':', 1)
+            header_part = header_part.strip()
+            rest = rest.strip()
+        else:
+            header_part = line
+            rest = ""
+        # For consistent formatting, expect details to be inside parentheses.
+        details = ""
+        if rest.startswith("(") and rest.endswith(")"):
+            details = rest[1:-1].strip()
+        else:
+            details = rest
+
+        # Group by the header.
+        if header_part in merged:
+            if details:
+                merged[header_part].append(details)
+        else:
+            merged[header_part] = [details] if details else []
+
+    # Rebuild merged lines.
+    result = []
+    for header, details_list in merged.items():
+        grouping_detail = None
+        other_details = []
+        for d in details_list:
+            # If a detail starts with "from" (ignoring case), treat it as the grouping.
+            if d.lower().startswith("from"):
+                grouping_detail = d
+            elif d:
+                other_details.append(d)
+        # Build the final details list: grouping first (if present), then the other details.
+        final_details = []
+        if grouping_detail:
+            final_details.append(grouping_detail)
+        final_details.extend(other_details)
+        # Rebuild the line in "Header: (detail1, detail2, ...)" format.
+        if final_details:
+            merged_line = f"{header}: (" + ", ".join(final_details) + ")"
+        else:
+            merged_line = header + ":"
+        result.append(merged_line)
+    return result
+# Revised create_scene function with post-processing.
+
+
+def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=True, sigfigs=1, collapse_skills=True):
     UniqueIDGenerator.reset_counters()
     if avoid_types is None:
         avoid_types = ["BarGraph", "Bars", "Axis"]
@@ -75,7 +135,7 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Tru
         avoid_types.extend(["BarGraph", "Bars"])
     scene = build_scene_from_plan(plan)
     total = len(scene)
-    min_total = 3
+    min_total = 1
     max_total = 6
     available_types = [t for t in list(OBJECT_TYPES.keys()) if t not in avoid_types]
     while total < min_total and available_types:
@@ -90,16 +150,29 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Tru
         obj.assign_geometry()
 
     skill_output = ""
-    for obj in scene:
-        skill_result = obj.perform_skills()
-        if isinstance(skill_result, dict):
-            # Convert tree structure to text
-            lines = skills_tree_to_text(skill_result)
-            skill_text = "\n".join(lines)
-            skill_output += "\n" + skill_text
-        else:
-            skill_output += "\n" + skill_result
+    skill_trees = []
+    line_count = 0
+    oval_count = 0
 
+    for obj in scene:
+        tree = obj.perform_skills()
+        line_count += count_low_level_nodes(tree, "RecognizeInstanceLine")
+        oval_count += count_low_level_nodes(tree, "RecognizeInstanceOval")
+
+        skill_trees.append(tree)
+        if collapse_skills:
+            # Get the consolidated lines from the tree.
+            lines = collapse_skills_tree_single_line(tree, sigfigs=sigfigs)
+            # Post-process lines from this object to merge those with the same base header.
+            merged_lines = merge_skill_lines(lines)
+            consolidated = " | ".join(merged_lines)
+            skill_output += "\n" + consolidated
+        else:
+            lines = skills_tree_to_text(tree, sigfigs=sigfigs)
+            skill_output += "\n" + "\n".join(lines)
     if not allow_partial:
         adjust_scene(scene, canvas=canvas)
-    return scene, skill_output
+    count_basic_string = "There are approximately " + str(line_count) + " lines and " + str(oval_count) + " ovals. "
+    skill_output = count_basic_string + skill_output
+    
+    return scene, skill_output, skill_trees

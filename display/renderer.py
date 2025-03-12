@@ -12,7 +12,7 @@ from geometry.utilities import get_line_length_and_angle
 # Display Scene and Save Structure (Direct New Format)
 ##############################################################################
 def display_and_save_scene(scene, outdir="output", question=None, answer=None,
-                           canvas=(0, 100, 0, 100), huggingface_dataset=True, visualize=True):
+                           canvas=(0, 100, 0, 100), huggingface_dataset=True, visualize=False):
     # Set up output directories.
     if huggingface_dataset:
         outdir = "output"

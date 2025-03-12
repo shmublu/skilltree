@@ -10,7 +10,7 @@ from display.renderer import display_and_save_scene
 from geometry.intersections import intersect  
 
 # 1. "Is there an <object type> in the image?"
-def demo_question_object(answer=True, outdir="demo_output/question_object", canvas_size=(100,100)):
+def demo_question_object(answer=True, outdir="demo_output/question_object", canvas_size=(100,100), sigfigs=3, json_skill_graph=False):
     width, height = canvas_size
     canvas = (0, width, 0, height)
     obj_type = random.choice(["Line", "Oval", "Rectangle", "Triangle", "Arrow"])
@@ -18,23 +18,28 @@ def demo_question_object(answer=True, outdir="demo_output/question_object", canv
         plan = {obj_type: random.randint(1, 2)}
     else:
         plan = {obj_type: 0}
-    scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[] if answer else [obj_type])
+    scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, avoid_types=[] if answer else [obj_type], sigfigs=sigfigs)
     if not answer:
         for obj in scene:
             if obj.ALIAS == obj_type:
                 raise Exception(f"Error: {obj_type} instance found when answer should be false.")
     question_text = f"Is there a {obj_type} in the image? Do not consider objects part of larger objects."
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
-
+    display_and_save_scene(scene, outdir=outdir, question=question_text, 
+                             answer=skill_output + "\n" + str(answer), canvas=canvas)
+    if json_skill_graph:
+        # Print the skill graph (list of skill trees) in JSON format
+        print("Skill Graph JSON:")
+        print(json.dumps(skill_trees, indent=2))
+    
 # 2. "Are there any parallel/perpendicular lines in the image?"
 def demo_question_parallel_perp_lines(answer=True,
                                       outdir="demo_output/question_parallel_perp_lines",
-                                      canvas_size=(100, 100)):
+                                      canvas_size=(100, 100), sigfigs=3, json_skill_graph=False):
     width, height = canvas_size
     canvas = (0, width, 0, height)
     epsilon = 4
     MAX_RETRY =  100
-    margin = 5
+    margin = 10
     test_parallel = random.choice([True, False])
     relation_text = "parallel" if test_parallel else "perpendicular"
     question_text = f"Are there any {relation_text} lines in the image? Consider lines that are not touching as well."
@@ -43,18 +48,27 @@ def demo_question_parallel_perp_lines(answer=True,
         r = random.random()
         if r < 0.02:
             plan = {"Rectangle": 1}
-            scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
-            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
+            scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, avoid_types=[], sigfigs=sigfigs)
+            display_and_save_scene(scene, outdir=outdir, question=question_text, 
+                                    answer=skill_output + "\n" + str(answer), canvas=canvas)
+            if json_skill_graph:
+                print(json.dumps(skill_trees, indent=2))
             return
         elif r < 0.04:
             plan = {"Bars": 1}
-            scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
-            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
+            scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, avoid_types=[], sigfigs=sigfigs)
+            display_and_save_scene(scene, outdir=outdir, question=question_text, 
+                                    answer=skill_output + "\n" + str(answer), canvas=canvas)
+            if json_skill_graph:
+                print(json.dumps(skill_trees, indent=2))
             return
         elif r < 0.06:
             plan = {"Axis": 1}
-            scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
-            display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
+            scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, avoid_types=[], sigfigs=sigfigs)
+            display_and_save_scene(scene, outdir=outdir, question=question_text, 
+                                    answer=skill_output + "\n" + str(answer), canvas=canvas)
+            if json_skill_graph:
+                print(json.dumps(skill_trees, indent=2))
             return
 
     def compute_endpoint(p, angle, length):
@@ -94,7 +108,7 @@ def demo_question_parallel_perp_lines(answer=True,
             {"p1": p1, "p2": compute_endpoint(p1, angle1, len1)},
             {"p1": p2, "p2": compute_endpoint(p2, angle2, len2)}
         ]}
-        scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=[])
+        scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, avoid_types=[], sigfigs=sigfigs)
 
         all_lines = []
         for obj in scene:
@@ -135,10 +149,14 @@ def demo_question_parallel_perp_lines(answer=True,
         if (answer and relation_found) or (not answer and not relation_found):
             break
 
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
-
+    display_and_save_scene(scene, outdir=outdir, question=question_text, 
+                            answer=skill_output + "\n" + str(answer), canvas=canvas)
+    if json_skill_graph:
+        print("Skill Graph JSON:")
+        print(json.dumps(skill_trees, indent=2))
+    
 # 3. "Are there any arrows pointing <upward | downward | leftward | rightward>?"
-def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arrow_direction", canvas_size=(100,100)):
+def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arrow_direction", canvas_size=(100,100), sigfigs=3, json_skill_graph=False):
     MAX_RETRY = 50
     width, height = canvas_size
     canvas = (0, width, 0, height)
@@ -147,7 +165,7 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
     direction_angles = {"upward": 270, "downward": 90, "leftward": 180, "rightward": 0}
 
     NO_ARROW_PROB_FALSE = 0.15
-
+    margin = 25
     attempt = 0
     scene = None
     plan = None
@@ -157,7 +175,7 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
             base_angle = direction_angles[direction]
             angle = base_angle + random.uniform(-tol_adjust, tol_adjust)
             length = random.uniform(20, min(width, height) / 1.5)
-            margin = 5
+
             start_x = random.uniform(margin, width - margin)
             start_y = random.uniform(margin, height - margin)
             plan = {"Arrow": [{
@@ -174,7 +192,7 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
                 base_angle = direction_angles[wrong_direction]
                 angle = base_angle + random.uniform(-tol_adjust, tol_adjust)
                 length = random.uniform(20, min(width, height) / 1.5)
-                margin = 5
+
                 start_x = random.uniform(margin, width - margin)
                 start_y = random.uniform(margin, height - margin)
                 plan = {"Arrow": [{
@@ -182,7 +200,7 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
                     "length": length,
                     "start": (start_x, start_y)
                 }]}
-        scene, skill_output = create_scene(plan, canvas=canvas)
+        scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, sigfigs=sigfigs)
         if not answer:
             arrow_objs = [obj for obj in scene if obj.ALIAS == "Arrow"]
             if not arrow_objs:
@@ -199,12 +217,16 @@ def demo_question_arrow_direction(answer=True, outdir="demo_output/question_arro
         break
 
     question_text = f"Is there an arrow pointing {direction}?"
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
-
+    display_and_save_scene(scene, outdir=outdir, question=question_text, 
+                            answer=skill_output + "\n" + str(answer), canvas=canvas)
+    if json_skill_graph:
+        print("Skill Graph JSON:")
+        print(json.dumps(skill_trees, indent=2))
+    
 # 4. "Does a <shape 1> intersect with a <shape 2>?"
 def demo_question_intersect_objects(answer=True,
                                     outdir="demo_output/question_intersect_objects",
-                                    canvas_size=(100, 100)):
+                                    canvas_size=(100, 100), sigfigs=3, json_skill_graph=False):
     import random, math, bisect, os, json, re
     from scene.builder import create_scene
     from display.renderer import display_and_save_scene
@@ -226,7 +248,7 @@ def demo_question_intersect_objects(answer=True,
         else:
             return "polygon"
     
-    margin = 5
+    margin = 20
     def gen_params(shape):
         if shape == "Line":
             p1 = (random.uniform(margin, width - margin), random.uniform(margin, height - margin))
@@ -341,7 +363,7 @@ def demo_question_intersect_objects(answer=True,
     MAX_RETRY = 150
     final_scene = None
     for attempt in range(MAX_RETRY):
-        temp_scene, skill_output = create_scene(plan, canvas=canvas, avoid_types=["BarGraph", "Bars", "Axis"])
+        temp_scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, avoid_types=["BarGraph", "Bars", "Axis"], sigfigs=sigfigs)
         if answer:
             final_scene = temp_scene
             break
@@ -380,4 +402,8 @@ def demo_question_intersect_objects(answer=True,
             break
 
     scene = final_scene if final_scene else None
-    display_and_save_scene(scene, outdir=outdir, question=question_text, answer=skill_output + "\n" + str(answer), canvas=canvas)
+    display_and_save_scene(scene, outdir=outdir, question=question_text, 
+                            answer=skill_output + "\n" + str(answer), canvas=canvas)
+    if json_skill_graph:
+        print("Skill Graph JSON:")
+        print(json.dumps(skill_trees, indent=2))
