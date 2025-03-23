@@ -8,14 +8,15 @@ import matplotlib.pyplot as plt
 
 from geometry.utilities import get_line_length_and_angle
 
+
 ##############################################################################
 # Display Scene and Save Structure (Direct New Format)
 ##############################################################################
-def display_and_save_scene(scene, outdir="output", question=None, answer=None,
+def display_and_save_scene(scene, outdir="output/output", question=None, reasoning=None, final_answer=None,
                            canvas=(0, 100, 0, 100), huggingface_dataset=True, visualize=False):
-    # Set up output directories.
+    # Determine output file/directory settings based on the dataset type.
     if huggingface_dataset:
-        outdir = "output"
+        outdir = "output-fix"
         image_folder = os.path.join(outdir, "images")
         os.makedirs(outdir, exist_ok=True)
         os.makedirs(image_folder, exist_ok=True)
@@ -38,67 +39,151 @@ def display_and_save_scene(scene, outdir="output", question=None, answer=None,
     for obj in scene:
         obj.render(ax)
     
-    # Add noise to the image 70% of the time.
-    if random.random() < 0.7:
+    # Add noise to the image 70% of the time to make it more realistic.
+    if random.random() < 0.33:
         xs = sorted(ax.get_xlim())
         ys = sorted(ax.get_ylim())
         total_pixels = abs((xs[1] - xs[0]) * (ys[1] - ys[0]))
-        noise_level = 0.002
+        max_noise_level = 0.001
+        # Randomize the noise level (current noise level is the max it can be)
+        noise_level = random.uniform(0, max_noise_level)
         nn = int(total_pixels * noise_level)
-        for _ in range(nn):
-            xx = random.randint(int(xs[0]), int(xs[1]) - 1)
-            yy = random.randint(int(ys[0]), int(ys[1]) - 1)
-            ax.plot(xx, yy, 'ks', markersize=1)
+        
+        # 50% chance: only multicolored noise; 50% chance: only uniformly colored noise.
+        if random.random() < 0.5:
+            # Multicolored noise: each dot gets its own random color.
+            for _ in range(nn):
+                xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+                yy = random.randint(int(ys[0]), int(ys[1]) - 1)
+                marker_size = random.uniform(0.01, 0.3)
+                random_color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+                ax.plot(xx, yy, marker='s', color=random_color, markersize=marker_size)
+        else:
+            # Uniformly colored noise: all dots share one random color.
+            uniform_color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+            for _ in range(nn):
+                xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+                yy = random.randint(int(ys[0]), int(ys[1]) - 1)
+                marker_size = random.uniform(0.1, 0.9)
+                ax.plot(xx, yy, marker='s', color=uniform_color, markersize=marker_size)
+        
+        # 20% chance to add random letters as noise (at a much lower density).
+        if random.random() < 0.2:
+            letter_count = max(1, int(nn * 0.2))
+            multilang_letters = ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                                 "αβγδεζηθικλμνξοπρστυφχψω"
+                                 "абвгдежзийклмнопрстуфхцчшщъыьэюя"
+                                 "あいうえおかきくけこ"
+                                 "אבגדהוזחט")
+            for _ in range(letter_count):
+                xx = random.randint(int(xs[0]), int(xs[1]) - 1)
+                yy = random.randint(int(ys[0]), int(ys[1]) - 1)
+                random_letter = random.choice(multilang_letters)
+                font_size = random.uniform(2, 6)
+                letter_color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+                # Specify fontname to fix text rendering issues.
+                ax.text(xx, yy, random_letter, fontsize=font_size, color=letter_color, fontname='DejaVu Sans')
     
-    # Optionally visualize the image with a title.
+    # If visualize flag is true, display the image with a title before saving.
     if visualize:
         title_text = ""
         if question:
             title_text += f"Question: {question}"
-        if answer is not None:
+        if reasoning:
             if title_text:
                 title_text += " | "
-            title_text += f"Answer: {answer}"
+            title_text += f"Reasoning: {reasoning}"
+        if final_answer:
+            if title_text:
+                title_text += " | "
+            title_text += f"Final Answer: {final_answer}"
         if title_text:
-            ax.set_title(title_text)
-        plt.show()
+            ax.set_title(title_text, fontname='DejaVu Sans')
+        plt.show()  # This call will block until the window is closed.
     
     # Save the scene image.
-    fig.savefig(image_out, dpi=120, bbox_inches='tight', pad_inches=0)
+    fig.savefig(image_out, dpi=400, bbox_inches='tight', pad_inches=0)
     print(f"Scene image saved to {image_out}")
     
-    # --- Build the conversation in the new format directly ---
-    # Instead of embedding media info inside message content, record it separately.
-    abs_image_path = os.path.abspath(image_out)
-    # Build user message: if a question is provided, use it; also, record the image.
-    user_text = question if question else ""
-    images = [abs_image_path]  # In this case, we always have one image.
-    # Build conversation with messages and media keys.
-    conversation = {
-        "messages": [
-            {"role": "user", "content": user_text},
-            {"role": "assistant", "content": answer if answer is not None else ""}
-        ]
-    }
-    if images:
-        conversation["images"] = images
-    # (Similarly, you could add "audios" and "videos" keys if needed.)
+    # Function for word-level synonym substitution.
+    def synonym_substitution(s):
+        substitutions = {
+            "reason": ["contemplate", "consider", "reflect on", "deliberate"],
+            "looks like": ["appears to be", "looks like", "is"],
+            "consider": ["regard", "view", "examine", "assess"],
+            "think": ["think", "believe", "suspect", "see that"],
+            "image": ["picture", "image", "scene"],
+            "picture": ["picture", "image", "scene"],
+        }
+        for word, alternatives in substitutions.items():
+            pattern = r'\b' + word + r'\b'
+            if re.search(pattern, s, flags=re.IGNORECASE):
+                replacement = random.choice(alternatives)
+                s = re.sub(pattern, replacement, s, count=1, flags=re.IGNORECASE)
+        return s
+
+    # Neutral introduction sentences.
+    neutral_intros = [
+        "I think there is geometry in the image. Let me decompose it and then return to the original question. ",
+        "The image contains shapes. Before I answer the question, let me parse the geometric shapes. ",
+        "This image has geometric data in it. I will analyze it visually and then go back to answer the question. ",
+        "This looks like a 2D image. Let me decompose it and then return to the original question. ",
+        "This is a two dimensional geometry scene. I will decompose it and then return to the original question. ",
+    ]
     
-    # Write conversation to a jsonl file.
+    # Build the final output message.
+    intro = random.choice(neutral_intros)
+    if reasoning is None:
+        reasoning = ""
+    reasoning_text = synonym_substitution(reasoning) + " " if reasoning.strip() else ""
+    
+    final_answer = final_answer.lower()
+    if final_answer == "true":
+        final_decision = "yes"
+    elif final_answer == "false":
+        final_decision = "no"
+    else:
+        final_decision = final_answer
+        
+    if question is None:
+        question = ""
+    return_sentence = f"After analyzing, I will now return to the original question: '{question}' - the answer is {final_decision}."
+    
+    final_output = intro + reasoning_text + return_sentence
+    final_output = synonym_substitution(final_output)
+    
+    # Handle annotation saving based on the dataset type.
     if huggingface_dataset:
+        abs_image_path = os.path.abspath(image_out)
+        conversation = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_path", "content": abs_image_path},
+                        {"type": "text", "content": question}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": final_output
+                }
+            ]
+        }
         hf_out = os.path.join(outdir, "huggingface_dataset.jsonl")
         file_mode = "a" if os.path.exists(hf_out) else "w"
         with open(hf_out, file_mode, encoding="utf-8") as jsonlfile:
             jsonlfile.write(json.dumps(conversation) + "\n")
         print(f"HuggingFace-style dataset row appended to {hf_out}")
     else:
+        annotation = {"question": question, "answer": final_output}
         ann_out = os.path.join(outdir, "scene_annotation.json")
-        with open(ann_out, "w", encoding="utf-8") as ann_file:
-            json.dump(conversation, ann_file, indent=2)
+        with open(ann_out, "w") as ann_file:
+            json.dump(annotation, ann_file, indent=2)
         print(f"Annotation saved to {ann_out}")
     
     plt.close(fig)
-    
+
 ##############################################################################
 # Modified run_scene_demo: Integrates scene creation and display.
 ##############################################################################

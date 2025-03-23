@@ -292,4 +292,62 @@ def collapse_skills_tree_single_line(tree, sigfigs=1):
         return lines
 
 
+def demo_question_count_objects(target_counts=None, outdir="demo_output/question_count_objects", canvas_size=(100,100), sigfigs=3, json_skill_graph=False):
+    width, height = canvas_size
+    canvas = (0, width, 0, height)
+    
+    # Decide whether to count one type or two types (ensuring two distinct types if chosen)
+    if random.random() < 0.5:
+        count_types = [random.choice(["Line", "Oval", "Rectangle", "Triangle", "Arrow"])]
+    else:
+        count_types = random.sample(["Line", "Oval", "Rectangle", "Triangle", "Arrow"], 2)
+    
+    # If no target_counts are provided, choose a random count (0 to 5) for each type.
+    # target_counts is a dict mapping object type to count.
+    if target_counts is None:
+        target_counts = {}
+        for t in count_types:
+            target_counts[t] = random.randint(0, 5)
+    
+    # Build the plan so that create_scene is asked to create exactly the specified counts for each type.
+    plan = {}
+    for t in count_types:
+        plan[t] = target_counts[t]
+    
+    scene, skill_output, skill_trees = create_scene(plan, canvas=canvas, avoid_types=[], sigfigs=sigfigs)
+    
+    # After scene creation, verify the scene contains the correct number of each object type.
+    # Instead of raising an exception, update the target count if it differs.
+    def count_objects(scene, obj_type):
+        count = 0
+        for obj in scene:
+            if hasattr(obj, "ALIAS") and obj.ALIAS == obj_type:
+                count += 1
+            if hasattr(obj, "sub_references"):
+                stack = list(obj.sub_references)
+                while stack:
+                    sub = stack.pop()
+                    if hasattr(sub, "ALIAS") and sub.ALIAS == obj_type:
+                        count += 1
+                    if hasattr(sub, "sub_references"):
+                        stack.extend(sub.sub_references)
+        return count
+
+    for t in count_types:
+        actual_count = count_objects(scene, t)
+        if actual_count != target_counts[t]:
+            target_counts[t] = actual_count  # update to the actual count
+    
+    # Compose the question text and compute the final answer.
+    if len(count_types) == 1:
+        question_text = f"How many {count_types[0]}s are in the image?"
+        final_answer = str(target_counts[count_types[0]])
+    else:
+        question_text = f"How many {count_types[0]}s and {count_types[1]}s are in the image?"
+        final_answer = str(target_counts[count_types[0]] + target_counts[count_types[1]])
+    
+    display_and_save_scene(scene, outdir=outdir, question=question_text, reasoning=skill_output, final_answer=final_answer, canvas=canvas)
+    if json_skill_graph:
+        print("Skill Graph JSON:")
+        print(json.dumps(skill_trees, indent=2))
 

@@ -140,7 +140,7 @@ def create_scene(plan, avoid_types=None, canvas=(0,100,0,100), allow_partial=Tru
     available_types = [t for t in list(OBJECT_TYPES.keys()) if t not in avoid_types]
     while total < min_total and available_types:
         extra_type = random.choice(available_types)
-        scene.append(OBJECT_TYPES[extra_type]())
+        scene.append(OBJECT_TYPES[extra_type](canvas=canvas))
         total += 1
     while total > max_total and scene:
         scene.pop()
