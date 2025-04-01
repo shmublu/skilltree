@@ -6,6 +6,7 @@ import re
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Rectangle, Polygon
 import matplotlib.colors as mcolors
+import numpy as np
 
 from base import PlotObject
 from utilities import get_line_length_and_angle, rotate_point
@@ -15,23 +16,34 @@ from utilities import get_line_length_and_angle, rotate_point
 ###############################################################################
 def random_color():
     # 50% chance to return "black", otherwise a random choice.
-    if random.random() < 0.5:
+    if random.random() < 0.33:
         return "black"
     else:
         return random.choice(["red", "blue", "green", "purple", "orange"])
 
-def random_thickness():
-    return random.uniform(1, 3)
+
 
 def random_fill_color():
     # Return colors with alpha transparency (0.3-0.5)
-    alpha = random.uniform(0.3, 0.5)
+    alpha = random.uniform(0.2, 0.6)
     if random.random() < 0.5:
-        rgba = mcolors.to_rgba("white", alpha)
+        rgba = mcolors.to_rgba("white", 0.0)
         return rgba
-    base_color = random.choice(["lightcoral", "skyblue", "lightgreen", "plum", "gold"])
+    base_color = random.choice(["red", "blue", "green", "purple", "orange"])
     rgba = mcolors.to_rgba(base_color, alpha)
     return rgba
+
+def random_thickness():
+    return random.uniform(1, 3)
+
+
+
+def round_to_sigfigs(value, sigfigs=1, nearest=1):
+    if value == 0:
+        return 0
+    order = math.floor(math.log10(abs(value)))
+    scale = 10 ** (sigfigs - 1 - order)
+    return round(round(value * scale) / scale / nearest) * nearest
 
 ###############################################################################
 # Line
@@ -127,12 +139,16 @@ class Line(PlotObject):
 
     def perform_skills(self, verbose=False):
         length, angle = get_line_length_and_angle(self.p1, self.p2)
+        length = round_to_sigfigs(length, sigfigs=1, nearest=1)
+        angle = round_to_sigfigs(angle, sigfigs=1, nearest=5)
+        e1 = (round_to_sigfigs(self.p1[0]),round_to_sigfigs(self.p1[1]))
+        e2 = round_to_sigfigs(self.p2[0]),round_to_sigfigs(self.p2[1])
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "RecognizeInstanceLine",
             "object": f"Line#{self.obj_id}" if not self.label else f"Line labeled as {self.label}",
             "details": [
-                {"action": "LocalizeLine", "object": f"Line#{self.obj_id}", "details": f"(Endpoints: {self.p1}, {self.p2}{label_info})"},
+                {"action": "LocalizeLine", "object": f"Line#{self.obj_id}", "details": f"(Endpoints: {e1}, {e2}{label_info})"},
                 {"action": "MeasureLine", "object": f"Line#{self.obj_id}", "details": f"(Length={length:.1f}, Angle={angle:.1f})"}
             ]
         }
@@ -244,18 +260,26 @@ class SolidOval(PlotObject):
         return (x_rot / a)**2 + (y_rot / b)**2 <= 1
     
     def perform_skills(self, verbose=False):
+        center_rounded = tuple(round_to_sigfigs(coord, 1) for coord in self.center)
+        width_rounded = round_to_sigfigs(self.width, 1)
+        height_rounded = round_to_sigfigs(self.height,1)
+        angle_rounded = round_to_sigfigs(self.angle, 1,5)
+        area_rounded = round_to_sigfigs((self.width * self.height * math.pi / 4), 1, 1)
+        
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "RecognizeInstanceOval",
             "object": f"Oval#{self.obj_id}" if not self.label else f"Oval labeled as {self.label}",
             "details": [
-                {"action": "LocalizeOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Center: {self.center}, W={self.width:.1f}, H={self.height:.1f}, Angle={self.angle:.1f}{label_info})"},
-                {"action": "MeasureOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Approximate Area={self.width*self.height*math.pi/4:.1f})"}
+                {"action": "LocalizeOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Center: {center_rounded}, W={width_rounded}, H={height_rounded}, Angle={angle_rounded}{label_info})"},
+                {"action": "MeasureOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Approximate Area={area_rounded})"}
             ]
         }
+        
         if verbose:
             for line in self.skills_tree_to_text(tree):
                 print(line)
+        
         return tree
 ###############################################################################
 # Solid Rectangle / Square
@@ -377,34 +401,56 @@ class SolidRectangle(PlotObject):
     def perform_skills(self, verbose=False):
         children_trees = []
         line_ids = []
+
         # Create child line objects for each edge if border and fill colors differ.
         if self.border_color != self.fill_color:
             corners = self.get_corners()
-            n = len(corners)
+            rounded_corners = [
+                tuple(round_to_sigfigs(coord, 1, 1) for coord in corner)
+                for corner in corners
+            ]
+            n = len(rounded_corners)
             for i in range(n):
-                p1 = corners[i]
-                p2 = corners[(i+1) % n]
+                p1 = rounded_corners[i]
+                p2 = rounded_corners[(i + 1) % n]
                 line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
                 line._geometry_locked = True
                 children_trees.append(line.perform_skills(verbose=verbose))
                 line_ids.append(line.obj_id)
-        area = self.width * self.height
-        perimeter = 2 * (self.width + self.height)
+        else:
+            rounded_corners = [
+                tuple(round_to_sigfigs(coord, 1, 1) for coord in corner)
+                for corner in self.get_corners()
+            ]
+
+        # Round width, height, and angle
+        rounded_width = round_to_sigfigs(self.width, 1, 1)
+        rounded_height = round_to_sigfigs(self.height, 1, 1)
+        rounded_angle = round_to_sigfigs(self.angle, 1, 1)
+
+        # Compute area and perimeter using rounded values
+        area = rounded_width * rounded_height
+        perimeter = 2 * (rounded_width + rounded_height)
+
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "GroupLine",
-            "object": f"Rectangle#{self.obj_id}"  if not self.label else f"Rectangle labeled as {self.label}",
+            "object": f"Rectangle#{self.obj_id}" if not self.label else f"Rectangle labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstanceRectangle", "object": f"Rectangle#{self.obj_id}"},
-                {"action": "LocalizeRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Corners: {corners[0]}, {corners[1]}, {corners[2]}, {corners[3]}) (W={self.width:.1f}, H={self.height:.1f}, Angle={self.angle:.1f}{label_info}, from lineIDs={line_ids})"},
-                {"action": "MeasureRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Area={area:.1f}, Perimeter={perimeter:.1f})"}
+                {"action": "LocalizeRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Corners: {rounded_corners[0]}, {rounded_corners[1]}, {rounded_corners[2]}, {rounded_corners[3]}) (W={rounded_width}, H={rounded_height}, Angle={rounded_angle}{label_info}, from lineIDs={line_ids})"},
+                {"action": "MeasureRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Area={area}, Perimeter={perimeter})"}
             ],
-            "children": children_trees 
+            "children": children_trees
         }
+
         if verbose:
             for line in self.skills_tree_to_text(tree):
                 print(line)
+
         return tree
+
+
 ###############################################################################
 # Solid Triangle
 ###############################################################################
@@ -487,35 +533,45 @@ class SolidTriangle(PlotObject):
     def perform_skills(self, verbose=False):
         children_trees = []
         line_ids = []
+
         if self.border_color != self.fill_color:
             pts = self.vertices
             n = len(pts)
             for i in range(n):
                 p1 = pts[i]
-                p2 = pts[(i+1) % n]
+                p2 = pts[(i + 1) % n]
                 line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
                 line._geometry_locked = True
                 children_trees.append(line.perform_skills(verbose=verbose))
                 line_ids.append(line.obj_id)
-        # Compute triangle area using the determinant formula.
-        x1, y1 = self.vertices[0]
-        x2, y2 = self.vertices[1]
-        x3, y3 = self.vertices[2]
-        area = abs(x1*(y2-y3) + x2*(y3-y1) + x3*(y1-y2)) / 2.0
+
+        # Round all vertex coordinates
+        rounded_vertices = [
+            tuple(round_to_sigfigs(coord, 1, 1) for coord in vertex)
+            for vertex in self.vertices
+        ]
+
+        # Compute triangle area using the determinant formula with rounded values
+        (x1, y1), (x2, y2), (x3, y3) = rounded_vertices
+        area = abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0
+        rounded_area = round_to_sigfigs(area, 1, 1)
+
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "GroupLine",
-            "object": f"Triangle#{self.obj_id}"  if not self.label else f"Triangle labeled as {self.label}",
+            "object": f"Triangle#{self.obj_id}" if not self.label else f"Triangle labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstanceTriangle", "object": f"Triangle#{self.obj_id}"},
-                {"action": "LocalizeTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Vertices: {self.vertices}), from lineIDs={line_ids})"},
-                {"action": "MeasureTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Area={area:.1f})"}
+                {"action": "LocalizeTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}), from lineIDs={line_ids})"},
+                {"action": "MeasureTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Area={rounded_area})"}
             ],
             "children": children_trees
         }
+
         if verbose:
             for line in self.skills_tree_to_text(tree):
                 print(line)
+
         return tree
 ###############################################################################
 # Solid Polygon
@@ -617,6 +673,8 @@ class SolidPolygon(PlotObject):
     def perform_skills(self, verbose=False):
         children_trees = []
         line_ids = []
+
+        # Create child line objects for each edge if border and fill colors differ.
         if self.border_color != self.fill_color:
             pts = self.vertices
             n = len(pts)
@@ -627,558 +685,502 @@ class SolidPolygon(PlotObject):
                 line._geometry_locked = True
                 children_trees.append(line.perform_skills(verbose=verbose))
                 line_ids.append(line.obj_id)
+
+        # Round all vertex coordinates for display purposes
+        rounded_vertices = [
+            tuple(round_to_sigfigs(coord, 1, 1) for coord in vertex)
+            for vertex in self.vertices
+        ]
+
+        # Calculate the area using the shoelace formula
+        def shoelace_area(vertices):
+            area = 0
+            n = len(vertices)
+            for i in range(n):
+                x1, y1 = vertices[i]
+                x2, y2 = vertices[(i + 1) % n]
+                area += x1 * y2 - x2 * y1
+            return abs(area) / 2
+
+        area = shoelace_area(self.vertices)
+
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "GroupLine",
-            "object": f"Polygon#{self.obj_id}"  if not self.label else f"Polygon labeled as {self.label}",
+            "object": f"Polygon#{self.obj_id}" if not self.label else f"Polygon labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstancePolygon", "object": f"Polygon#{self.obj_id}"},
-                {"action": "LocalizePolygon", "object": f"Polygon#{self.obj_id}", "details": f"(Vertices: {self.vertices}),  from lineIDs={line_ids})"},
-                {"action": "MeasurePolygon", "object": f"Polygon#{self.obj_id}", "details": ""}
+                {"action": "LocalizePolygon", "object": f"Polygon#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}), from lineIDs={line_ids})"},
+                {"action": "MeasurePolygon", "object": f"Polygon#{self.obj_id}", "details": ""},
+                {"action": "MeasurePolygonArea", "object": f"Polygon#{self.obj_id}", "details": f"Area: {area}"}
             ],
-            "children": children_trees 
+            "children": children_trees
         }
+
         if verbose:
             for line in self.skills_tree_to_text(tree):
                 print(line)
         return tree
 
-
-
-
-
-
-class ShapeGeneratorFactory(PlotObject):
-    ALIAS = "ShapeGeneratorFactory"
+class CompositeShapeGenerator:
+    """
+    Generates a new shape class with a fixed arrangement of components
+    that can be instantiated with different scales, rotations, etc.
     
-    # Define a list of adjectives and nouns for random naming
-    ADJECTIVES = ["Cosmic", "Mystic", "Geometric", "Harmonic", "Crystal", "Elegant", "Dynamic", 
-                  "Balanced", "Radiant", "Fluid", "Quantum", "Vibrant", "Symmetric", "Arcane"]
-    NOUNS = ["Star", "Bloom", "Nexus", "Prism", "Vortex", "Sigil", "Emblem", 
-             "Glyph", "Mandala", "Cipher", "Rune", "Totem", "Insignia", "Crest"]
+    Now you can specify the allowed component types (including a doodle)
+    and the maximum count for each.
+    """
     
-    # Define pattern types for shape arrangement
-    PATTERNS = ["radial", "concentric", "stacked", "mirrored", "interlocked"]
-    
-    def __init__(self, pattern_type=None, components=None, canvas=(0, 800, 0, 600)):
-        super().__init__()
+    def __init__(self, canvas=(0, 800, 0, 600), allowed_components=None, color_mode=None):
         self.canvas = canvas
+        # allowed_components is a dict mapping component type to maximum count.
+        # Use component classes for solid parts and the string 'Doodle' for doodles.
+        # Updated default: allow up to 2 doodles.
+        self.allowed_components = allowed_components or {
+            Line: 2,
+            SolidOval: 2,
+            SolidRectangle: 2,
+            SolidTriangle: 2,
+            'Doodle': 2
+        }
+        # Minimum and maximum numbers for solid shapes (if no doodle is provided)
+        self.min_total_s = 2
+        self.max_total_s = 5
+        self.shape_name = self._generate_name()
+        self.shape_amount = 0
+        self.color_mode = color_mode  # Can be "fixed", "mapped", or None (unfixed)
         
-        # Generate a unique name for this shape type
-        self.shape_name = f"{random.choice(self.ADJECTIVES)}{random.choice(self.NOUNS)}"
+        # Create blueprints based on allowed components.
+        self.component_blueprints = self._create_component_blueprints()
+        self.doodle_blueprints = self._create_doodle_blueprints()
         
-        # Pattern configuration
-        self.pattern_type = pattern_type if pattern_type else random.choice(self.PATTERNS)
+        # Enforce minimum configuration:
+        # Valid configurations are:
+        #   - at least one doodle (even if no solid shape)
+        #   - at least two solid shapes (if no doodle)
+        #   - or at least one doodle and one solid shape.
+        total_components = len(self.component_blueprints) + len(self.doodle_blueprints)
+        if total_components < 2:
+            if len(self.doodle_blueprints) == 0:
+                self.doodle_blueprints.append(self._create_doodle_blueprint())
+            if (len(self.component_blueprints) == 0 and
+                (len(self.component_blueprints) + len(self.doodle_blueprints)) < 2):
+                available = [t for t in self.allowed_components if t != 'Doodle']
+                if available:
+                    comp_type = random.choice(available)
+                    self.component_blueprints.append({
+                        'type': comp_type,
+                        'rel_distance': random.uniform(20, 60),
+                        'rel_angle': random.uniform(0, 360),
+                        'rel_rotation': random.uniform(0, 360),
+                        'size_factor': random.uniform(0.7, 1.3),
+                        'border_color': random_color(),
+                        'fill_color': random_fill_color(),
+                        'thickness': random_thickness()
+                    })
+        if self.color_mode == "mapped":
+            for bp in self.component_blueprints:
+                bp['orig_border_color'] = bp['border_color']
+                if 'fill_color' in bp:
+                    bp['orig_fill_color'] = bp['fill_color']
+            for doodle in self.doodle_blueprints:
+                doodle['orig_color'] = doodle['color']
         
-        # Components to use (limited to 4 max, not including doodle)
-        self.components = components if components else self._select_random_components()
-        self.num_components = len(self.components)
-        
-        # Doodle configuration
-        self.has_doodle = random.random() < 0.5  # 50% chance to include a doodle
-        self.doodle_points = self._generate_doodle() if self.has_doodle else None
-        
-        # Generate the new shape class
-        self.shape_class = self._create_shape_class()
+        # Generate the shape class.
+        self.ComponentShape = self._create_shape_class()
     
-    def _select_random_components(self):
-        """Select random component types to use in the new shape."""
-        available_shapes = [Line, SolidOval, SolidRectangle, SolidTriangle, SolidPolygon]
-        num_components = random.randint(2, 4)  # Between 2 and 4 components
-        return random.sample(available_shapes, num_components)
+    def _generate_name(self):
+        prefixes = ["Geo", "Symbio", "Poly", "Mecha", "Astro", "Neuro"]
+        suffixes = ["Form", "Glyph", "Shape", "Struct", "Node", "Sigil"]
+        return f"{random.choice(prefixes)}{random.choice(suffixes)}"
     
-    def _generate_doodle(self):
-        """Generate a smooth doodle curve."""
-        num_control_points = random.randint(5, 10)
+    def _create_component_blueprints(self):
+        blueprints = []
+        total_objs = 0
+        for comp_type, max_count in self.allowed_components.items():
+            if comp_type == 'Doodle':
+                continue
+            count = random.randint(0, max_count)
+            for i in range(count):
+                if total_objs >= self.max_total_s:
+                    break
+                total_objs += 1
+                blueprints.append({
+                    'type': comp_type,
+                    'rel_distance': random.uniform(0, 60),
+                    'rel_angle': random.uniform(0, 360),
+                    'rel_rotation': random.uniform(0, 360),
+                    'size_factor': random.uniform(0.5, 1.8),
+                    'border_color': random_color(),
+                    'fill_color': random_fill_color(),
+                    'thickness': random_thickness()
+                })
+        return blueprints
+    
+    def _create_doodle_blueprints(self):
+        doodles = []
+        doodle_count_max = self.allowed_components.get('Doodle', 0)
+        doodle_count = random.randint(0, doodle_count_max)
+        for i in range(doodle_count):
+            doodles.append(self._create_doodle_blueprint())
+        return doodles
+    
+    def _create_doodle_blueprint(self):
+        num_points = random.randint(15, 25)
+        points = []
+        current_point = (0, 0)
+        points.append(current_point)
+        angle = random.uniform(0, 2 * math.pi)
+        step_length = random.uniform(10, 20)
+        base_max_delta_angle = math.radians(30)
+        curviness = random.uniform(0.5, 1.5)
+        max_delta_angle = base_max_delta_angle * curviness
         
-        # Generate control points in a normalized space (0-1)
-        control_points = []
-        for i in range(num_control_points):
-            angle = 2 * math.pi * i / num_control_points
-            # Add some randomness to the radius
-            radius = 0.3 + 0.1 * random.random()
-            x = 0.5 + radius * math.cos(angle)
-            y = 0.5 + radius * math.sin(angle)
-            # Add some random jitter
-            x += random.uniform(-0.05, 0.05)
-            y += random.uniform(-0.05, 0.05)
-            control_points.append((x, y))
+        for i in range(1, num_points):
+            delta_angle = random.uniform(-max_delta_angle, max_delta_angle)
+            angle += delta_angle
+            step = step_length * random.uniform(0.95, 1.05)
+            new_x = current_point[0] + step * math.cos(angle)
+            new_y = current_point[1] + step * math.sin(angle)
+            tolerance = 0.05 * step
+            new_x += random.uniform(-tolerance, tolerance)
+            new_y += random.uniform(-tolerance, tolerance)
+            new_point = (new_x, new_y)
+            points.append(new_point)
+            current_point = new_point
         
-        # Close the loop
-        control_points.append(control_points[0])
+        def smooth(points, window_size=3):
+            smoothed = []
+            n = len(points)
+            for i in range(n):
+                sum_x, sum_y, count = 0, 0, 0
+                for j in range(max(0, i - window_size), min(n, i + window_size + 1)):
+                    sum_x += points[j][0]
+                    sum_y += points[j][1]
+                    count += 1
+                smoothed.append((sum_x / count, sum_y / count))
+            return smoothed
         
-        # Generate more points for a smoother curve
-        smooth_points = []
-        steps = 100
-        for i in range(len(control_points) - 1):
-            p0 = control_points[i]
-            p1 = control_points[(i + 1) % len(control_points)]
-            for t in range(steps):
-                # Linear interpolation for simplicity
-                # Could be enhanced with spline interpolation for smoother curves
-                alpha = t / steps
-                x = p0[0] * (1 - alpha) + p1[0] * alpha
-                y = p0[1] * (1 - alpha) + p1[1] * alpha
-                smooth_points.append((x, y))
+        smoothed_points = smooth(points, window_size=2)
+        start_coord = smoothed_points[0]
+        end_coord = smoothed_points[-1]
+        total_length = 0
+        for i in range(1, len(smoothed_points)):
+            dx = smoothed_points[i][0] - smoothed_points[i-1][0]
+            dy = smoothed_points[i][1] - smoothed_points[i-1][1]
+            total_length += math.hypot(dx, dy)
         
-        return smooth_points
+        return {
+            'points': smoothed_points,
+            'color': random_color(),
+            'thickness': random_thickness(),
+            'skill_trace': {
+                'start_coord': start_coord,
+                'end_coord': end_coord,
+                'length': total_length,
+                'curviness': curviness
+            }
+        }
     
     def _create_shape_class(self):
-        """Create a new shape class with the configured components and pattern."""
-        pattern_type = self.pattern_type
-        components = self.components
-        doodle_points = self.doodle_points
-        shape_name = self.shape_name
+        generator = self
         
-        # Define the new shape class
-        class CustomShape(PlotObject):
-            ALIAS = shape_name
-            
-            def __init__(self, center=None, scale=1.0, angle=0, 
-                         color_scheme=None, canvas=(0, 800, 0, 600), label=None):
+        class CompositeShape(PlotObject):
+            ALIAS = generator.shape_name
+
+            def __init__(self, center=None, scale=1.0, angle=0, canvas=(0, 800, 0, 600), label=None):
                 super().__init__()
                 self.canvas = canvas
-                self.center = center
+                self.center = center if center else ((canvas[0] + canvas[1]) / 2, (canvas[2] + canvas[3]) / 2)
                 self.scale = scale
                 self.angle = angle
                 self.label = label
+                # Store the color_mode from the generator so that recolor() can access it.
+                self.color_mode = generator.color_mode
                 
-                # Set default color scheme if none provided
-                if color_scheme is None:
-                    self.color_scheme = {
-                        "primary": random_color(),
-                        "secondary": random_color(),
-                        "fill": random_fill_color(),
-                        "doodle": random_color(),
-                        "thickness": random_thickness()
-                    }
-                else:
-                    self.color_scheme = color_scheme
-                
-                # Will store the component shapes
-                self.shapes = []
-                self._geometry_locked = (center is not None)
+                self.component_blueprints = generator.component_blueprints
+                self.doodle_blueprints = generator.doodle_blueprints
+                self.components = []
+                self._geometry_locked = False
+            
+            def _instantiate_components(self):
+                self.components = []
+                for bp in self.component_blueprints:
+                    rel_x = bp['rel_distance'] * math.cos(math.radians(bp['rel_angle']))
+                    rel_y = bp['rel_distance'] * math.sin(math.radians(bp['rel_angle']))
+                    scaled_x = rel_x * self.scale
+                    scaled_y = rel_y * self.scale
+                    tol_factor_x = random.uniform(0.95, 1.05)
+                    tol_factor_y = random.uniform(0.95, 1.05)
+                    scaled_x *= tol_factor_x
+                    scaled_y *= tol_factor_y
+                    rotated_x = (scaled_x * math.cos(math.radians(self.angle)) -
+                                 scaled_y * math.sin(math.radians(self.angle)))
+                    rotated_y = (scaled_x * math.sin(math.radians(self.angle)) +
+                                 scaled_y * math.cos(math.radians(self.angle)))
+                    abs_x = self.center[0] + rotated_x
+                    abs_y = self.center[1] + rotated_y
+                    abs_rotation = (bp['rel_rotation'] + self.angle) % 360
+                    
+                    if bp['type'] == Line:
+                        length = 30 * self.scale * bp['size_factor']
+                        angle_rad = math.radians(abs_rotation)
+                        p1 = (abs_x, abs_y)
+                        p2 = (abs_x + length * math.cos(angle_rad),
+                              abs_y + length * math.sin(angle_rad))
+                        component = Line(
+                            p1=p1, p2=p2,
+                            color=bp['border_color'],
+                            thickness=bp['thickness'],
+                            canvas=self.canvas,
+                            label=f"{self.label}-L{len(self.components)+1}" if self.label else None
+                        )
+                    
+                    elif bp['type'] == SolidOval:
+                        width = 40 * self.scale * bp['size_factor']
+                        height = 30 * self.scale * bp['size_factor']
+                        component = SolidOval(
+                            center=(abs_x, abs_y),
+                            width=width, height=height,
+                            angle=abs_rotation,
+                            border_color=bp['border_color'],
+                            fill_color=bp['fill_color'],
+                            thickness=bp['thickness'],
+                            canvas=self.canvas,
+                            label=f"{self.label}-O{len(self.components)+1}" if self.label else None
+                        )
+                    
+                    elif bp['type'] == SolidRectangle:
+                        width = 40 * self.scale * bp['size_factor']
+                        height = 30 * self.scale * bp['size_factor']
+                        component = SolidRectangle(
+                            center=(abs_x, abs_y),
+                            width=width, height=height,
+                            angle=abs_rotation,
+                            border_color=bp['border_color'],
+                            fill_color=bp['fill_color'],
+                            thickness=bp['thickness'],
+                            canvas=self.canvas,
+                            label=f"{self.label}-R{len(self.components)+1}" if self.label else None
+                        )
+                    
+                    elif bp['type'] == SolidTriangle:
+                        size = 30 * self.scale * bp['size_factor']
+                        vertices = [
+                            (abs_x, abs_y + size),
+                            (abs_x - size * 0.866, abs_y - size * 0.5),
+                            (abs_x + size * 0.866, abs_y - size * 0.5)
+                        ]
+                        rotated_vertices = [
+                            rotate_point(v, (abs_x, abs_y), abs_rotation) for v in vertices
+                        ]
+                        component = SolidTriangle(
+                            vertices=rotated_vertices,
+                            border_color=bp['border_color'],
+                            fill_color=bp['fill_color'],
+                            thickness=bp['thickness'],
+                            canvas=self.canvas,
+                            label=f"{self.label}-T{len(self.components)+1}" if self.label else None
+                        )
+                    else:
+                        continue
+                    
+                    self.components.append(component)
+            
+            def _get_transformed_doodle(self, doodle_blueprint):
+                transformed_points = []
+                for x, y in doodle_blueprint['points']:
+                    scaled_x = x * self.scale
+                    scaled_y = y * self.scale
+                    rotated_x = (scaled_x * math.cos(math.radians(self.angle)) -
+                                 scaled_y * math.sin(math.radians(self.angle)))
+                    rotated_y = (scaled_x * math.sin(math.radians(self.angle)) +
+                                 scaled_y * math.cos(math.radians(self.angle)))
+                    abs_x = self.center[0] + rotated_x
+                    abs_y = self.center[1] + rotated_y
+                    transformed_points.append((abs_x, abs_y))
+                return transformed_points
             
             def assign_geometry(self):
                 if not self._geometry_locked:
-                    xmin, xmax, ymin, ymax = self.canvas
-                    if self.center is None:
-                        self.center = (
-                            random.uniform(xmin + 100, xmax - 100),
-                            random.uniform(ymin + 100, ymax - 100)
-                        )
-                    
-                    # Clear any existing shapes
-                    self.shapes = []
-                    
-                    # Create the component shapes based on the pattern
-                    if pattern_type == "radial":
-                        self._create_radial_pattern()
-                    elif pattern_type == "concentric":
-                        self._create_concentric_pattern()
-                    elif pattern_type == "stacked":
-                        self._create_stacked_pattern()
-                    elif pattern_type == "mirrored":
-                        self._create_mirrored_pattern()
-                    elif pattern_type == "interlocked":
-                        self._create_interlocked_pattern()
-                    
-                    # Add doodle if present
-                    if doodle_points:
-                        self._add_doodle()
-                    
+                    self._instantiate_components()
                     self._geometry_locked = True
-                
-                self.enforce_bounds()
-            
-            def _create_radial_pattern(self):
-                """Create shapes arranged in a radial pattern."""
-                num_shapes = len(components)
-                angle_step = 360 / num_shapes
-                base_distance = 40 * self.scale
-                
-                for i, shape_class in enumerate(components):
-                    component_angle = self.angle + i * angle_step
-                    rad = math.radians(component_angle)
-                    
-                    # Position relative to center
-                    rel_x = base_distance * math.cos(rad)
-                    rel_y = base_distance * math.sin(rad)
-                    
-                    # Absolute position
-                    pos_x = self.center[0] + rel_x
-                    pos_y = self.center[1] + rel_y
-                    
-                    # Create and add the shape
-                    shape = self._create_component(shape_class, (pos_x, pos_y), component_angle)
-                    self.shapes.append(shape)
-            
-            def _create_concentric_pattern(self):
-                """Create shapes arranged in concentric rings."""
-                num_shapes = len(components)
-                angle_offset = 360 / num_shapes
-                
-                for i, shape_class in enumerate(components):
-                    # Alternate between inner and outer rings
-                    ring_radius = (20 + 15 * (i % 2)) * self.scale
-                    component_angle = self.angle + i * angle_offset
-                    rad = math.radians(component_angle)
-                    
-                    # Position relative to center
-                    rel_x = ring_radius * math.cos(rad)
-                    rel_y = ring_radius * math.sin(rad)
-                    
-                    # Absolute position
-                    pos_x = self.center[0] + rel_x
-                    pos_y = self.center[1] + rel_y
-                    
-                    # Create and add the shape
-                    shape = self._create_component(shape_class, (pos_x, pos_y), component_angle)
-                    self.shapes.append(shape)
-            
-            def _create_stacked_pattern(self):
-                """Create shapes stacked on top of each other."""
-                base_offset = 10 * self.scale
-                
-                for i, shape_class in enumerate(components):
-                    # Stack with small offsets
-                    offset_x = i * base_offset
-                    offset_y = i * base_offset
-                    
-                    # Rotate the offset
-                    rad = math.radians(self.angle)
-                    rotated_x = offset_x * math.cos(rad) - offset_y * math.sin(rad)
-                    rotated_y = offset_x * math.sin(rad) + offset_y * math.cos(rad)
-                    
-                    # Absolute position
-                    pos_x = self.center[0] + rotated_x
-                    pos_y = self.center[1] + rotated_y
-                    
-                    # Create and add the shape with decreasing size
-                    size_factor = 1.0 - (i * 0.15)  # Each shape gets smaller
-                    shape = self._create_component(
-                        shape_class, (pos_x, pos_y), 
-                        self.angle, size_factor
-                    )
-                    self.shapes.append(shape)
-            
-            def _create_mirrored_pattern(self):
-                """Create shapes in a mirrored arrangement."""
-                base_distance = 30 * self.scale
-                
-                for i, shape_class in enumerate(components):
-                    # Alternate between left and right sides
-                    side_factor = 1 if i % 2 == 0 else -1
-                    
-                    # Position relative to center
-                    rel_x = side_factor * base_distance
-                    rel_y = (i // 2) * 15 * self.scale  # Offset vertically for pairs
-                    
-                    # Rotate the offset
-                    rad = math.radians(self.angle)
-                    rotated_x = rel_x * math.cos(rad) - rel_y * math.sin(rad)
-                    rotated_y = rel_x * math.sin(rad) + rel_y * math.cos(rad)
-                    
-                    # Absolute position
-                    pos_x = self.center[0] + rotated_x
-                    pos_y = self.center[1] + rotated_y
-                    
-                    # Create and add the shape
-                    # Mirror the angle for opposite sides
-                    component_angle = self.angle + (180 if side_factor < 0 else 0)
-                    shape = self._create_component(shape_class, (pos_x, pos_y), component_angle)
-                    self.shapes.append(shape)
-            
-            def _create_interlocked_pattern(self):
-                """Create shapes that interlock with each other."""
-                num_shapes = len(components)
-                angle_step = 360 / num_shapes
-                base_distance = 25 * self.scale
-                
-                for i, shape_class in enumerate(components):
-                    # Calculate position in a tighter arrangement
-                    component_angle = self.angle + i * angle_step
-                    rad = math.radians(component_angle)
-                    
-                    # Alternate between inner and outer positions
-                    distance = base_distance * (0.8 if i % 2 == 0 else 1.2)
-                    
-                    # Position relative to center
-                    rel_x = distance * math.cos(rad)
-                    rel_y = distance * math.sin(rad)
-                    
-                    # Absolute position
-                    pos_x = self.center[0] + rel_x
-                    pos_y = self.center[1] + rel_y
-                    
-                    # Create and add the shape with rotation towards center
-                    shape = self._create_component(
-                        shape_class, (pos_x, pos_y), 
-                        component_angle + 90  # Rotate to face inward/outward
-                    )
-                    self.shapes.append(shape)
-            
-            def _add_doodle(self):
-                """Add a doodle around or through the shape."""
-                # Scale and position the doodle
-                scaled_doodle = []
-                doodle_size = 60 * self.scale
-                
-                for x, y in doodle_points:
-                    # Scale from [0,1] to proper size and position
-                    scaled_x = self.center[0] + (x - 0.5) * doodle_size
-                    scaled_y = self.center[1] + (y - 0.5) * doodle_size
-                    
-                    # Rotate around center
-                    rotated_point = rotate_point(
-                        (scaled_x, scaled_y), 
-                        self.center, 
-                        self.angle
-                    )
-                    scaled_doodle.append(rotated_point)
-                
-                # Store the doodle points for rendering
-                self.doodle = scaled_doodle
-            
-            def _create_component(self, shape_class, position, angle, size_factor=1.0):
-                """Helper method to create a component shape."""
-                base_size = 20 * self.scale * size_factor
-                
-                if shape_class == Line:
-                    p1 = position
-                    angle_rad = math.radians(angle)
-                    length = base_size
-                    p2 = (
-                        p1[0] + length * math.cos(angle_rad), 
-                        p1[1] + length * math.sin(angle_rad)
-                    )
-                    return Line(
-                        p1=p1, p2=p2, 
-                        color=self.color_scheme["primary"], 
-                        thickness=self.color_scheme["thickness"],
-                        canvas=self.canvas,
-                        label=f"{self.label}-L{len(self.shapes)+1}" if self.label else None
-                    )
-                
-                elif shape_class == SolidOval:
-                    return SolidOval(
-                        center=position, 
-                        width=base_size, 
-                        height=base_size * 0.7, 
-                        angle=angle, 
-                        border_color=self.color_scheme["primary"],
-                        fill_color=self.color_scheme["fill"],
-                        thickness=self.color_scheme["thickness"],
-                        canvas=self.canvas,
-                        label=f"{self.label}-O{len(self.shapes)+1}" if self.label else None
-                    )
-                
-                elif shape_class == SolidRectangle:
-                    return SolidRectangle(
-                        center=position, 
-                        width=base_size, 
-                        height=base_size * 0.8, 
-                        angle=angle, 
-                        border_color=self.color_scheme["primary"],
-                        fill_color=self.color_scheme["fill"],
-                        thickness=self.color_scheme["thickness"],
-                        canvas=self.canvas,
-                        label=f"{self.label}-R{len(self.shapes)+1}" if self.label else None
-                    )
-                
-                elif shape_class == SolidTriangle:
-                    # Create a triangle with vertices around the position
-                    side_length = base_size
-                    half_side = side_length / 2
-                    height = side_length * math.sqrt(3) / 2
-                    
-                    # Calculate vertices before rotation
-                    v1 = (position[0], position[1] - height * 2/3)
-                    v2 = (position[0] - half_side, position[1] + height * 1/3)
-                    v3 = (position[0] + half_side, position[1] + height * 1/3)
-                    
-                    # Rotate vertices around position
-                    vertices = [
-                        rotate_point(v1, position, angle),
-                        rotate_point(v2, position, angle),
-                        rotate_point(v3, position, angle)
-                    ]
-                    
-                    return SolidTriangle(
-                        vertices=vertices, 
-                        border_color=self.color_scheme["primary"],
-                        fill_color=self.color_scheme["fill"],
-                        thickness=self.color_scheme["thickness"],
-                        canvas=self.canvas,
-                        label=f"{self.label}-T{len(self.shapes)+1}" if self.label else None
-                    )
-                
-                elif shape_class == SolidPolygon:
-                    # Create a regular polygon
-                    num_vertices = random.randint(5, 6)
-                    radius = base_size / 2
-                    
-                    vertices = []
-                    for i in range(num_vertices):
-                        vertex_angle = 360 * i / num_vertices + angle
-                        vertex_x = position[0] + radius * math.cos(math.radians(vertex_angle))
-                        vertex_y = position[1] + radius * math.sin(math.radians(vertex_angle))
-                        vertices.append((vertex_x, vertex_y))
-                    
-                    return SolidPolygon(
-                        vertices=vertices, 
-                        num_vertices=num_vertices, 
-                        border_color=self.color_scheme["primary"],
-                        fill_color=self.color_scheme["fill"],
-                        thickness=self.color_scheme["thickness"],
-                        canvas=self.canvas,
-                        label=f"{self.label}-P{len(self.shapes)+1}" if self.label else None
-                    )
-                
-                return None
             
             def render(self, ax):
-                """Render the custom shape with all its components."""
                 if not self._geometry_locked:
                     self.assign_geometry()
-                
-                # Render all component shapes
-                for shape in self.shapes:
-                    shape.render(ax)
-                
-                # Render the doodle if present
-                if hasattr(self, 'doodle') and self.doodle:
-                    doodle_xs = [p[0] for p in self.doodle]
-                    doodle_ys = [p[1] for p in self.doodle]
-                    ax.plot(
-                        doodle_xs, doodle_ys, 
-                        color=self.color_scheme.get("doodle", "black"), 
-                        linewidth=self.color_scheme.get("thickness", 2),
-                        alpha=0.8,
-                        zorder=10  # Ensure doodle is drawn on top
-                    )
-                
-                # Add label if set
+                for component in self.components:
+                    component.render(ax)
+                for doodle in self.doodle_blueprints:
+                    doodle_points = self._get_transformed_doodle(doodle)
+                    xs = [p[0] for p in doodle_points]
+                    ys = [p[1] for p in doodle_points]
+                    ax.plot(xs, ys, 
+                            color=doodle['color'],
+                            linewidth=doodle['thickness'],
+                            alpha=0.7)
                 if self.label:
-                    # Place the label at the center of the shape
-                    ax.text(
-                        self.center[0], self.center[1], 
-                        self.label, 
-                        ha='center', va='center',
-                        fontsize=10, fontweight='bold',
-                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=2)
-                    )
+                    ax.text(self.center[0], self.center[1], self.label,
+                            ha='center', va='center',
+                            fontsize=10, fontweight='bold',
+                            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
             
             def set_bottom_left(self, x, y, **kwargs):
-                """Set the bottom left position of the shape's bounding box."""
-                bbox = self.get_bbox()
-                current_bl_x, current_bl_y = bbox[0], bbox[1]
-                
-                # Calculate the shift needed
-                shift_x = x - current_bl_x
-                shift_y = y - current_bl_y
-                
-                # Update center
-                self.center = (self.center[0] + shift_x, self.center[1] + shift_y)
-                
-                # Update all component shapes
-                for shape in self.shapes:
-                    shape.set_bottom_left(shape.get_bbox()[0] + shift_x, shape.get_bbox()[1] + shift_y)
-                
-                # Update doodle if present
-                if hasattr(self, 'doodle') and self.doodle:
-                    self.doodle = [(p[0] + shift_x, p[1] + shift_y) for p in self.doodle]
-                
-                self.enforce_bounds()
-            
-            def get_bbox(self):
-                """Get the bounding box of the entire custom shape."""
                 if not self._geometry_locked:
                     self.assign_geometry()
-                
+                bbox = self.get_bbox()
+                current_bl_x, current_bl_y = bbox[0], bbox[1]
+                shift_x = x - current_bl_x
+                shift_y = y - current_bl_y
+                self.center = (self.center[0] + shift_x, self.center[1] + shift_y)
+                self._geometry_locked = False
+                if 'angle' in kwargs:
+                    self.angle = kwargs['angle']
+                if 'scale' in kwargs:
+                    self.scale = kwargs['scale']
+            
+            def get_bbox(self):
+                if not self._geometry_locked:
+                    self.assign_geometry()
                 all_points = []
-                for shape in self.shapes:
-                    bbox = shape.get_bbox()
+                for component in self.components:
+                    bbox = component.get_bbox()
                     all_points.extend([(bbox[0], bbox[1]), (bbox[2], bbox[3])])
-                
-                if hasattr(self, 'doodle') and self.doodle:
-                    all_points.extend(self.doodle)
-                
-                x_coords, y_coords = zip(*all_points)
+                for doodle in self.doodle_blueprints:
+                    transformed = self._get_transformed_doodle(doodle)
+                    all_points.extend(transformed)
+                x_coords = [p[0] for p in all_points]
+                y_coords = [p[1] for p in all_points]
                 return (min(x_coords), min(y_coords), max(x_coords), max(y_coords))
             
             def contains_point(self, point):
-                """Check if the point is contained in any of the component shapes."""
-                for shape in self.shapes:
-                    if shape.contains_point(point):
+                if not self._geometry_locked:
+                    self.assign_geometry()
+                for component in self.components:
+                    if component.contains_point(point):
                         return True
-                
-                # Check if point is on the doodle (with some tolerance)
-                if hasattr(self, 'doodle') and self.doodle:
-                    tolerance = 2  # pixels
-                    for i in range(len(self.doodle) - 1):
-                        p1, p2 = self.doodle[i], self.doodle[i+1]
+                tolerance = 3 * (random_thickness() if self.doodle_blueprints else 1)
+                for doodle in self.doodle_blueprints:
+                    transformed = self._get_transformed_doodle(doodle)
+                    for i in range(len(transformed) - 1):
+                        p1 = transformed[i]
+                        p2 = transformed[i + 1]
                         if self._point_to_line_distance(point, p1, p2) <= tolerance:
                             return True
-                
                 return False
             
-            def _point_to_line_distance(self, point, line_start, line_end):
-                """Calculate the distance from a point to a line segment."""
+            def _point_to_line_distance(self, point, line_p1, line_p2):
                 x, y = point
-                x1, y1 = line_start
-                x2, y2 = line_end
-                
-                A = x - x1
-                B = y - y1
-                C = x2 - x1
-                D = y2 - y1
-                
-                dot = A * C + B * D
-                len_sq = C * C + D * D
-                param = dot / len_sq if len_sq != 0 else -1
-                
-                if param < 0:
-                    xx = x1
-                    yy = y1
-                elif param > 1:
-                    xx = x2
-                    yy = y2
-                else:
-                    xx = x1 + param * C
-                    yy = y1 + param * D
-                
-                dx = x - xx
-                dy = y - yy
-                return math.sqrt(dx * dx + dy * dy)
+                x1, y1 = line_p1
+                x2, y2 = line_p2
+                line_length_sq = (x2 - x1) ** 2 + (y2 - y1) ** 2
+                if line_length_sq == 0:
+                    return math.hypot(x - x1, y - y1)
+                t = max(0, min(1, ((x - x1) * (x2 - x1) + (y - y1) * (y2 - y1)) / line_length_sq))
+                proj_x = x1 + t * (x2 - x1)
+                proj_y = y1 + t * (y2 - y1)
+                return math.hypot(x - proj_x, y - proj_y)
             
             def perform_skills(self, verbose=False):
-                """Generate a skills tree for this custom shape."""
-                children_trees = [shape.perform_skills(verbose=False) for shape in self.shapes]
-                
+                if not self._geometry_locked:
+                    self.assign_geometry()
+                component_trees = [component.perform_skills(verbose=False)
+                                   for component in self.components]
+                area = 0
+                for component in self.components:
+                    if hasattr(component, 'width') and hasattr(component, 'height'):
+                        area += component.width * component.height
+                    elif hasattr(component, 'vertices'):
+                        vertices = component.vertices
+                        n = len(vertices)
+                        a = 0
+                        for i in range(n):
+                            j = (i + 1) % n
+                            a += vertices[i][0] * vertices[j][1]
+                            a -= vertices[j][0] * vertices[i][1]
+                        area += abs(a) / 2
+                label_info = f", Label='{self.label}'" if self.label else ""
                 tree = {
-                    "action": "RecognizeCustomShape",
-                    "object": f"{self.ALIAS}#{id(self)}",
+                    "action": "RecognizeCompositeShape",
+                    "object": f"{self.ALIAS}#{id(self)}" if not self.label else f"{self.ALIAS} labeled as {self.label}",
                     "details": [
-                        {"action": "IdentifyShapeType", "details": f"Shape Type: {self.ALIAS}"},
-                        {"action": "CountComponents", "details": f"Number of Components: {len(self.shapes)}"},
-                        {"action": "DescribeArrangement", "details": f"Arrangement: {pattern_type} pattern"},
-                        {"action": "LocalizeShape", "details": f"Center: {self.center}, Scale: {self.scale}, Angle: {self.angle}"}
+                        {"action": "LocalizeCompositeShape", 
+                         "details": f"Center: {self.center}, Scale: {self.scale}, Angle: {self.angle}{label_info}"},
+                        {"action": "CountComponents", 
+                         "details": f"Components: {len(self.components)}"},
+                        {"action": "MeasureCompositeShape", 
+                         "details": f"Approximate Area: {area:.1f}"}
                     ],
-                    "children": children_trees
+                    "children": component_trees
                 }
-                
-                if hasattr(self, 'doodle') and self.doodle:
-                    tree["details"].append({"action": "IdentifyDoodle", "details": "Doodle present"})
-                
                 if verbose:
                     for line in self.skills_tree_to_text(tree):
                         print(line)
-                
                 return tree
+            
+            def enforce_bounds(self):
+                if not self._geometry_locked:
+                    self.assign_geometry()
+                bbox = self.get_bbox()
+                xmin, xmax, ymin, ymax = self.canvas
+                if (bbox[0] < xmin or bbox[2] > xmax or bbox[1] < ymin or bbox[3] > ymax):
+                    raise ValueError(f"Shape exceeds canvas bounds: {bbox} vs canvas {self.canvas}")
+            
+            def recolor(self, border_color=None, fill_color=None, doodle_color=None):
+                """
+                Recolor the composite shape.
+                Behavior depends on the color_mode:
+                - If color_mode is "fixed": any provided new color will override every component.
+                - If color_mode is "mapped": each blueprint retains its original color identity.
+                  If a dictionary is provided, it maps original colors to new colors;
+                  if a single color is provided, it is applied to every original color.
+                - Otherwise (unfixed): each blueprint is updated individually.
+                """
+                for bp in self.component_blueprints:
+                    if self.color_mode == "fixed":
+                        if border_color is not None:
+                            bp['border_color'] = border_color
+                        if fill_color is not None and 'fill_color' in bp:
+                            bp['fill_color'] = fill_color
+                    elif self.color_mode == "mapped":
+                        if border_color is not None:
+                            if isinstance(border_color, dict):
+                                bp['border_color'] = border_color.get(bp.get('orig_border_color'), bp['border_color'])
+                            else:
+                                bp['border_color'] = border_color
+                        if fill_color is not None and 'fill_color' in bp:
+                            if isinstance(fill_color, dict):
+                                bp['fill_color'] = fill_color.get(bp.get('orig_fill_color'), bp['fill_color'])
+                            else:
+                                bp['fill_color'] = fill_color
+                    else:
+                        if border_color is not None:
+                            bp['border_color'] = border_color
+                        if fill_color is not None and 'fill_color' in bp:
+                            bp['fill_color'] = fill_color
+                for component in self.components:
+                    if hasattr(component, 'color') and border_color is not None:
+                        component.color = border_color
+                    if hasattr(component, 'border_color') and border_color is not None:
+                        component.border_color = border_color
+                    if hasattr(component, 'fill_color') and fill_color is not None:
+                        component.fill_color = fill_color
+                for doodle in self.doodle_blueprints:
+                    if self.color_mode == "fixed":
+                        if doodle_color is not None:
+                            doodle['color'] = doodle_color
+                    elif self.color_mode == "mapped":
+                        if doodle_color is not None:
+                            if isinstance(doodle_color, dict):
+                                doodle['color'] = doodle_color.get(doodle.get('orig_color'), doodle['color'])
+                            else:
+                                doodle['color'] = doodle_color
+                    else:
+                        if doodle_color is not None:
+                            doodle['color'] = doodle_color
+                self._geometry_locked = False
         
-        return CustomShape
-    
+        return CompositeShape
+
     def generate_shape(self, **kwargs):
-        """Generate an instance of the custom shape."""
-        return self.shape_class(**kwargs)
+        return self.ComponentShape(**kwargs)
