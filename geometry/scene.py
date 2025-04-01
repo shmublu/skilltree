@@ -13,10 +13,11 @@ from shapes import CompositeShapeGenerator  # New composite shape generator
 class SceneGenerator:
     """Class for generating scenes of geometric shapes based on different constraints and question types."""
     
-    def __init__(self, canvas_size=(800, 600), max_attempts=100):
+    def __init__(self, canvas_size=(800, 600), max_attempts=5):
         """Initialize a scene generator."""
         self.canvas_width, self.canvas_height = canvas_size
         self.canvas = (0, self.canvas_width, 0, self.canvas_height)
+        self.global_max_shapes = 7
         self.max_attempts = max_attempts
         self.shapes = []
         self.shape_classes = {
@@ -33,6 +34,8 @@ class SceneGenerator:
     def reset(self):
         """Clear all shapes in the scene."""
         self.shapes = []
+        self.composite_shape_gen = CompositeShapeGenerator(canvas=self.canvas)
+        self.shape_classes["CompositeShape"] = self.composite_shape_gen.ComponentShape
 
     def shapes_intersect(self, shape1, shape2, resolution=50):
         """Returns True if shape1 and shape2 have an intersection over a small threshold."""
@@ -76,6 +79,9 @@ class SceneGenerator:
 
     def add_shape(self, shape_type, intersect_rules={}, position_rules={}, shape_amounts={}, **kwargs):
         """Add a shape of the given type to the scene with the given constraints."""
+        if len(self.shapes) >= self.global_max_shapes:
+            return None  # Or raise an exception if you prefer.
+        
         if shape_type not in self.shape_classes:
             raise ValueError(f"Unknown shape type: {shape_type}")
         
@@ -87,9 +93,8 @@ class SceneGenerator:
             if self.is_valid_placement(shape, intersect_rules, position_rules, shape_amounts):
                 self.shapes.append(shape)
                 return shape
-        
+    
         return None
-
     def get_shapes_by_type(self):
         """Return a dictionary mapping shape types to lists of shapes of that type."""
         result = {}
@@ -118,7 +123,7 @@ class SceneGenerator:
                 x = random.uniform(0, self.canvas_width)
                 y = random.uniform(0, self.canvas_height)
                 # Use a small scale (e.g., 0.3) and a random rotation.
-                shape = self.composite_shape_gen.generate_shape(center=(x, y), scale=0.3, angle=random.uniform(0, 360))
+                shape = self.composite_shape_gen.generate_shape(center=(x, y), scale=random.uniform(0.2, 0.45), angle=random.uniform(0, 360))
                 self.shapes.append(shape)
 
     def render(self, ax=None, figsize=(10, 8)):

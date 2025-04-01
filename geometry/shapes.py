@@ -37,13 +37,12 @@ def random_thickness():
     return random.uniform(1, 3)
 
 
-
-def round_to_sigfigs(value, sigfigs=1, nearest=1):
-    if value == 0:
-        return 0
-    order = math.floor(math.log10(abs(value)))
-    scale = 10 ** (sigfigs - 1 - order)
-    return round(round(value * scale) / scale / nearest) * nearest
+def round_to_nearest(value, nearest=1):
+    rounded_value = round(value / nearest) * nearest
+    # If the result is an integer, return it as an int
+    if isinstance(rounded_value, int) or rounded_value == int(rounded_value):
+        return int(rounded_value)
+    return rounded_value
 
 ###############################################################################
 # Line
@@ -59,7 +58,9 @@ class Line(PlotObject):
         self.p1 = p1  # may be None
         self.p2 = p2  # may be None
         self.label = label
-        self._geometry_locked = (self.p1 is not None and self.p2 is not None)
+        self.children = None
+        if (self.p1 is not None and self.p2 is not None):
+            self.lock_geometry()
 
     def assign_geometry(self):
         if not self._geometry_locked:
@@ -139,17 +140,17 @@ class Line(PlotObject):
 
     def perform_skills(self, verbose=False):
         length, angle = get_line_length_and_angle(self.p1, self.p2)
-        length = round_to_sigfigs(length, sigfigs=1, nearest=1)
-        angle = round_to_sigfigs(angle, sigfigs=1, nearest=5)
-        e1 = (round_to_sigfigs(self.p1[0]),round_to_sigfigs(self.p1[1]))
-        e2 = round_to_sigfigs(self.p2[0]),round_to_sigfigs(self.p2[1])
+        length = round_to_nearest(length, 1)
+        angle = round_to_nearest(angle, 5)
+        e1 = (round_to_nearest(self.p1[0]),round_to_nearest(self.p1[1]))
+        e2 = (round_to_nearest(self.p2[0]),round_to_nearest(self.p2[1]))
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "RecognizeInstanceLine",
             "object": f"Line#{self.obj_id}" if not self.label else f"Line labeled as {self.label}",
             "details": [
                 {"action": "LocalizeLine", "object": f"Line#{self.obj_id}", "details": f"(Endpoints: {e1}, {e2}{label_info})"},
-                {"action": "MeasureLine", "object": f"Line#{self.obj_id}", "details": f"(Length={length:.1f}, Angle={angle:.1f})"}
+                {"action": "MeasureLine", "object": f"Line#{self.obj_id}", "details": f"(Length={length}, Angle={angle})"}
             ]
         }
         if verbose:
@@ -176,6 +177,7 @@ class SolidOval(PlotObject):
         self.width = width
         self.height = height
         self.angle = angle
+        self.children=None
         self.is_circle = is_circle  # if True, force width==height.
         self.label = label
         self._geometry_locked = (center is not None and width is not None and height is not None and angle is not None)
@@ -260,11 +262,11 @@ class SolidOval(PlotObject):
         return (x_rot / a)**2 + (y_rot / b)**2 <= 1
     
     def perform_skills(self, verbose=False):
-        center_rounded = tuple(round_to_sigfigs(coord, 1) for coord in self.center)
-        width_rounded = round_to_sigfigs(self.width, 1)
-        height_rounded = round_to_sigfigs(self.height,1)
-        angle_rounded = round_to_sigfigs(self.angle, 1,5)
-        area_rounded = round_to_sigfigs((self.width * self.height * math.pi / 4), 1, 1)
+        center_rounded = tuple(round_to_nearest(coord, 1) for coord in self.center)
+        width_rounded = round_to_nearest(self.width, 1)
+        height_rounded = round_to_nearest(self.height,1)
+        angle_rounded = round_to_nearest(self.angle, 5)
+        area_rounded = round_to_nearest((self.width * self.height * math.pi / 4), 1)
         
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
@@ -272,7 +274,7 @@ class SolidOval(PlotObject):
             "object": f"Oval#{self.obj_id}" if not self.label else f"Oval labeled as {self.label}",
             "details": [
                 {"action": "LocalizeOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Center: {center_rounded}, W={width_rounded}, H={height_rounded}, Angle={angle_rounded}{label_info})"},
-                {"action": "MeasureOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Approximate Area={area_rounded})"}
+                {"action": "MeasureOval", "object": f"SolidOval#{self.obj_id}", "details": f" (Approximate Area={area_rounded})"}
             ]
         }
         
@@ -301,8 +303,8 @@ class SolidRectangle(PlotObject):
         self.angle = angle
         self.is_square = is_square
         self.label = label
-        self._geometry_locked = (center is not None and width is not None and height is not None and angle is not None)
-
+        if (center is not None and width is not None and height is not None and angle is not None):
+            self.lock_geometry()
     def assign_geometry(self):
         if not self._geometry_locked:
             xmin, xmax, ymin, ymax = self.canvas
@@ -313,7 +315,7 @@ class SolidRectangle(PlotObject):
             if self.height is None:
                 self.height = random.uniform(canvas_height * 0.15, canvas_height * 0.7)
             if self.is_square:
-                self.height = self.width
+                abs(self.height - self.width) < self.width * .02
             if self.center is None:
                 rad = math.radians(self.angle if self.angle is not None else 0)
                 bbox_w = abs(self.width * math.cos(rad)) + abs(self.height * math.sin(rad))
@@ -323,12 +325,30 @@ class SolidRectangle(PlotObject):
                 self.center = (cx, cy)
             if self.angle is None:
                 self.angle = random.uniform(0, 180)
-            self._geometry_locked = True
         self.enforce_bounds()
-
+        self.lock_geometry()
+    def create_children(self):
+        if not self._geometry_locked:
+            return
+        self.children = None
+        # Create child line objects for each edge if border and fill colors differ.
+        if self.border_color != self.fill_color:
+            self.children = []
+            corners = self.get_corners()
+            rounded_corners = [
+                tuple(round_to_nearest(coord, 1) for coord in corner)
+                for corner in corners
+            ]
+            n = len(rounded_corners)
+            for i in range(n):
+                p1 = rounded_corners[i]
+                p2 = rounded_corners[(i + 1) % n]
+                line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
+                line.lock_geometry()
+                self.children.append(line)
     def render(self, ax):
         if not self._geometry_locked:
-            self.assign_geometry()
+            raise AssertionError("Geoemetry was not assigned and tried to print skills.")
         rect = Rectangle((-self.width/2, -self.height/2), self.width, self.height,
                          edgecolor=self.border_color,
                          facecolor=self.fill_color,
@@ -362,8 +382,8 @@ class SolidRectangle(PlotObject):
         self.width = width
         self.height = width if self.is_square else height
         self.angle = angle
-        self._geometry_locked = True
         self.enforce_bounds()
+        self.lock_geometry()
 
     def get_bbox(self):
         rad = math.radians(self.angle)
@@ -382,6 +402,8 @@ class SolidRectangle(PlotObject):
         return (min(xs), min(ys), max(xs), max(ys))
     
     def contains_point(self, point):
+        if not self._geometry_locked:
+            raise AssertionError("Geometry was not assigned and tried to access geometry.")
         x, y = point
         cx, cy = self.center
         theta = math.radians(-self.angle)
@@ -390,6 +412,8 @@ class SolidRectangle(PlotObject):
         return (abs(x_rot) <= self.width / 2) and (abs(y_rot) <= self.height / 2)
     
     def get_corners(self):
+        if not self._geometry_locked:
+            raise AssertionError("Geometry was not assigned and tried to access geometry.")
         # Compute the four corners of the rectangle.
         rad = math.radians(self.angle)
         half_w = self.width / 2.0
@@ -399,6 +423,8 @@ class SolidRectangle(PlotObject):
         return [(self.center[0] + x, self.center[1] + y) for (x, y) in rotated]
 
     def perform_skills(self, verbose=False):
+        if not self._geometry_locked:
+            raise AssertionError("Geometry was not assigned and tried to access geometry.")
         children_trees = []
         line_ids = []
 
@@ -406,27 +432,23 @@ class SolidRectangle(PlotObject):
         if self.border_color != self.fill_color:
             corners = self.get_corners()
             rounded_corners = [
-                tuple(round_to_sigfigs(coord, 1, 1) for coord in corner)
+                tuple(round_to_nearest(coord, 1) for coord in corner)
                 for corner in corners
             ]
             n = len(rounded_corners)
-            for i in range(n):
-                p1 = rounded_corners[i]
-                p2 = rounded_corners[(i + 1) % n]
-                line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
-                line._geometry_locked = True
-                children_trees.append(line.perform_skills(verbose=verbose))
-                line_ids.append(line.obj_id)
+            for c in self.children:
+                children_trees.append(c.perform_skills(verbose=verbose))
+                line_ids.append(c.obj_id)
         else:
             rounded_corners = [
-                tuple(round_to_sigfigs(coord, 1, 1) for coord in corner)
+                tuple(round_to_nearest(coord, 1) for coord in corner)
                 for corner in self.get_corners()
             ]
 
         # Round width, height, and angle
-        rounded_width = round_to_sigfigs(self.width, 1, 1)
-        rounded_height = round_to_sigfigs(self.height, 1, 1)
-        rounded_angle = round_to_sigfigs(self.angle, 1, 1)
+        rounded_width = round_to_nearest(self.width, 1)
+        rounded_height = round_to_nearest(self.height, 1)
+        rounded_angle = round_to_nearest(self.angle, 5)
 
         # Compute area and perimeter using rounded values
         area = rounded_width * rounded_height
@@ -466,7 +488,8 @@ class SolidTriangle(PlotObject):
         self.thickness = thickness if thickness is not None else random_thickness()
         self.vertices = vertices if (vertices is not None and len(vertices) == 3) else [None, None, None]
         self.label = label
-        self._geometry_locked = (None not in self.vertices)
+        if (None not in self.vertices):
+            self.lock_geometry()
 
     def assign_geometry(self):
         if not self._geometry_locked:
@@ -475,10 +498,11 @@ class SolidTriangle(PlotObject):
                              for v in self.vertices]
             self._geometry_locked = True
         self.enforce_bounds()
+        self.lock_geometry()
 
     def render(self, ax):
         if not self._geometry_locked:
-            self.assign_geometry()
+            raise AssertionError("Geoemetry was not assigned and tried to print skills.")
         poly = Polygon(self.vertices, closed=True,
                        edgecolor=self.border_color,
                        facecolor=self.fill_color,
@@ -529,32 +553,42 @@ class SolidTriangle(PlotObject):
         b2 = sign(pt, v2, v3) < 0.0
         b3 = sign(pt, v3, v1) < 0.0
         return ((b1 == b2) and (b2 == b3))
-    
-    def perform_skills(self, verbose=False):
-        children_trees = []
-        line_ids = []
-
+    def create_children(self):
+        if not self._geometry_locked:
+            return
+        self.children = None
         if self.border_color != self.fill_color:
             pts = self.vertices
             n = len(pts)
+            self.children = []
             for i in range(n):
                 p1 = pts[i]
                 p2 = pts[(i + 1) % n]
                 line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
-                line._geometry_locked = True
-                children_trees.append(line.perform_skills(verbose=verbose))
-                line_ids.append(line.obj_id)
+                line.lock_geometry()
+                self.children.append(line)
+        
+    def perform_skills(self, verbose=False):
+        if not self._geometry_locked:
+            raise AssertionError("Geoemetry was not assigned and tried to print skills.")
+        children_trees = []
+        line_ids = []
+
+        if self.border_color != self.fill_color:
+            for c in self.children:
+                children_trees.append(c.perform_skills(verbose=verbose))
+                line_ids.append(c.obj_id)
 
         # Round all vertex coordinates
         rounded_vertices = [
-            tuple(round_to_sigfigs(coord, 1, 1) for coord in vertex)
+            tuple(round_to_nearest(coord, 1) for coord in vertex)
             for vertex in self.vertices
         ]
 
         # Compute triangle area using the determinant formula with rounded values
         (x1, y1), (x2, y2), (x3, y3) = rounded_vertices
         area = abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0
-        rounded_area = round_to_sigfigs(area, 1, 1)
+        rounded_area = round_to_nearest(area, 1)
 
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
@@ -588,12 +622,13 @@ class SolidPolygon(PlotObject):
         self.thickness = thickness if thickness is not None else random_thickness()
         self.num_vertices = max(num_vertices, 3)
         self.label = label
+        self.children = None
         if vertices is None or len(vertices) < 3:
             self.vertices = None
-            self._geometry_locked = False
         else:
             self.vertices = vertices
-            self._geometry_locked = True
+            self.lock_geometry()
+            self.create_children()
 
     def _generate_random_convex_polygon(self):
         xmin, xmax, ymin, ymax = self.canvas
@@ -607,8 +642,26 @@ class SolidPolygon(PlotObject):
     def assign_geometry(self):
         if not self._geometry_locked:
             self.vertices = self._generate_random_convex_polygon()
-            self._geometry_locked = True
-        self.enforce_bounds()
+            self.enforce_bounds()
+            self.lock_geometry()
+            self.create_children()
+
+    def create_children(self):
+        """Create child line objects along the polygon’s edges if the border
+        and fill colors differ. This function is called once the geometry is locked."""
+        if not self._geometry_locked:
+            return
+        self.children = None
+        if self.border_color != self.fill_color:
+            self.children = []
+            pts = self.vertices
+            n = len(pts)
+            for i in range(n):
+                p1 = pts[i]
+                p2 = pts[(i + 1) % n]
+                line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
+                line.lock_geometry()
+                self.children.append(line)
 
     def render(self, ax):
         if not self._geometry_locked:
@@ -649,8 +702,9 @@ class SolidPolygon(PlotObject):
         cy = sum(p[1] for p in pts) / self.num_vertices
         pts.sort(key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
         self.vertices = pts
-        self._geometry_locked = True
         self.enforce_bounds()
+        self.lock_geometry()
+        self.create_children()
 
     def get_bbox(self):
         xs = [p[0] for p in self.vertices]
@@ -671,24 +725,18 @@ class SolidPolygon(PlotObject):
         return count % 2 == 1
     
     def perform_skills(self, verbose=False):
+        if not self._geometry_locked:
+            raise AssertionError("Geometry was not assigned and locked.")
         children_trees = []
         line_ids = []
-
-        # Create child line objects for each edge if border and fill colors differ.
-        if self.border_color != self.fill_color:
-            pts = self.vertices
-            n = len(pts)
-            for i in range(n):
-                p1 = pts[i]
-                p2 = pts[(i + 1) % n]
-                line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
-                line._geometry_locked = True
-                children_trees.append(line.perform_skills(verbose=verbose))
-                line_ids.append(line.obj_id)
-
+        if self.children is not None:
+            for child in self.children:
+                children_trees.append(child.perform_skills(verbose=verbose))
+                line_ids.append(child.obj_id)
+                
         # Round all vertex coordinates for display purposes
         rounded_vertices = [
-            tuple(round_to_sigfigs(coord, 1, 1) for coord in vertex)
+            tuple(round_to_nearest(coord, 1) for coord in vertex)
             for vertex in self.vertices
         ]
 
@@ -710,9 +758,8 @@ class SolidPolygon(PlotObject):
             "object": f"Polygon#{self.obj_id}" if not self.label else f"Polygon labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstancePolygon", "object": f"Polygon#{self.obj_id}"},
-                {"action": "LocalizePolygon", "object": f"Polygon#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}), from lineIDs={line_ids})"},
-                {"action": "MeasurePolygon", "object": f"Polygon#{self.obj_id}", "details": ""},
-                {"action": "MeasurePolygonArea", "object": f"Polygon#{self.obj_id}", "details": f"Area: {area}"}
+                {"action": "LocalizePolygon", "object": f"Polygon#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}), from lineIDs={line_ids}"},
+                {"action": "MeasurePolygonArea", "object": f"Polygon#{self.obj_id}", "details": f" Area: {area})"}
             ],
             "children": children_trees
         }
@@ -721,6 +768,7 @@ class SolidPolygon(PlotObject):
             for line in self.skills_tree_to_text(tree):
                 print(line)
         return tree
+
 
 class CompositeShapeGenerator:
     """

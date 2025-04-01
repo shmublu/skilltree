@@ -5,11 +5,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 import re
 from decimal import Decimal, ROUND_HALF_UP
+import copy
 # Disable interactive mode and set backend for consistency.
 plt.ioff()
 matplotlib.use("Agg", force=True)
+
+
 class UniqueIDGenerator:
     counters = {}
+    _checkpoint = None
 
     @staticmethod
     def get_unique_id(alias):
@@ -22,6 +26,17 @@ class UniqueIDGenerator:
     @staticmethod
     def reset_counters():
         UniqueIDGenerator.counters.clear()
+
+    @staticmethod
+    def save_checkpoint():
+        UniqueIDGenerator._checkpoint = copy.deepcopy(UniqueIDGenerator.counters)
+
+    @staticmethod
+    def load_checkpoint():
+        if UniqueIDGenerator._checkpoint is not None:
+            UniqueIDGenerator.counters = copy.deepcopy(UniqueIDGenerator._checkpoint)
+        else:
+            raise ValueError("No checkpoint has been saved.")
 class PlotObject:
     # Default canvas dimensions. No part of any object should be outside [0,0]-[CANVAS_WIDTH,CANVAS_HEIGHT].
     CANVAS_WIDTH = 800
@@ -31,6 +46,7 @@ class PlotObject:
 
     def __init__(self):
         self.obj_id = UniqueIDGenerator.get_unique_id(self.ALIAS)
+        self._geometry_locked = False
         self.sub_references = []  # For future composite objects; currently not used.
         
         # Optional visual attributes
@@ -43,7 +59,7 @@ class PlotObject:
     def __str__(self):
         """Return label if set, otherwise a default string consisting of the alias and id."""
         return self.label if self.label is not None else f"{self.ALIAS}#{self.obj_id}"
-    def assign_geometry(self):
+    def _assign_geometry(self):
         """Assign geometry to self and propagate to children if necessary."""
         for child in self.sub_references:
             child.assign_geometry()
@@ -56,14 +72,19 @@ class PlotObject:
             for line in self.skills_tree_to_text(tree):
                 print(line)
         return tree
-
+    def lock_geometry(self):
+        self._geometry_locked = True
+        if hasattr(self, "create_children") and callable(self.create_children):
+            self.create_children()
     def skills_tree_to_text(self, tree, indent=0):
         """Helper to convert a skills tree dict into indented text lines."""
         lines = [(" " * indent) + f"{tree['action']} -> {tree['object']}"]
         for child in tree.get("children", []):
             lines.extend(self.skills_tree_to_text(child, indent + 4))
         return lines
-
+    def get_children(self):
+        """Method to get children shapes; returns a list of PlotObjects. If there are none, returns None"""
+        return getattr(self, 'children', None)
     def render(self, ax):
         """Render self (and children) on the provided matplotlib axis."""
         for child in self.sub_references:
