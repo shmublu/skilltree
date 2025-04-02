@@ -4,23 +4,34 @@ import uuid
 import matplotlib.pyplot as plt
 import math
 import os
-from typing import List, Dict, Tuple, Any, Optional, Union
+from typing import List, Dict, Tuple, Any, Optional
 
 # Import shapes (assume these classes are implemented elsewhere)
 from shapes import Line, SolidOval, SolidRectangle, SolidTriangle, SolidPolygon
 from shapes import CompositeShapeGenerator  # New composite shape generator
+from base import UniqueIDGenerator
 
 class SceneGenerator:
     """Class for generating scenes of geometric shapes based on different constraints and question types."""
     
-    def __init__(self, canvas_size=(800, 600), max_attempts=5):
-        """Initialize a scene generator."""
-        self.canvas_width, self.canvas_height = canvas_size
+    def __init__(self, base_canvas: Tuple[int, int]=None, max_attempts: int=50) -> None:
+        """
+        Initialize a scene generator.
+        We expand the base canvas size by a random factor between 1.1 and 1.2
+        to allow extra room and reduce boundary failures.
+        """
+        
+        base_canvas = (random.randint(300, 800), random.randint(300, 800)) if not base_canvas else base_canvas
+        base_width, base_height = base_canvas
+        expansion = 1
+        self.canvas_width = int(base_width * expansion)
+        self.canvas_height = int(base_height * expansion)
         self.canvas = (0, self.canvas_width, 0, self.canvas_height)
-        self.global_max_shapes = 7
-        self.max_attempts = max_attempts
-        self.shapes = []
-        self.shape_classes = {
+        # Increase number of shapes to generate a richer scene.
+        self.global_max_shapes: int = random.randint(7, 10)
+        self.max_attempts: int = max_attempts
+        self.shapes: List[Any] = []
+        self.shape_classes: Dict[str, Any] = {
             "Line": Line,
             "SolidOval": SolidOval,
             "SolidRectangle": SolidRectangle,
@@ -30,104 +41,226 @@ class SceneGenerator:
         # Add composite shape generator and include its shape class.
         self.composite_shape_gen = CompositeShapeGenerator(canvas=self.canvas)
         self.shape_classes["CompositeShape"] = self.composite_shape_gen.ComponentShape
+        
+        # Track failures per question type (retained from original code)
+        self.fail_counts: Dict[str, int] = {}
 
-    def reset(self):
-        """Clear all shapes in the scene."""
+    def reset(self) -> None:
+        """Clear all shapes in the scene and reset the ID generator."""
         self.shapes = []
+        UniqueIDGenerator.reset_counters()
         self.composite_shape_gen = CompositeShapeGenerator(canvas=self.canvas)
         self.shape_classes["CompositeShape"] = self.composite_shape_gen.ComponentShape
 
-    def shapes_intersect(self, shape1, shape2, resolution=50):
+    def get_random_parameters(self, shape_type: str) -> Dict[str, Any]:
+        """
+        Smart parameter generator for each shape type.
+        Now, shapes can be anywhere on the canvas with a wider range of sizes.
+        """
+        params = {}
+        if shape_type == "Line":
+            params["p1"] = (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
+            params["p2"] = (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
+            params["thickness"] = random.uniform(1, 5)
+        elif shape_type == "SolidOval":
+            params["center"] = (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
+            params["width"] = random.uniform(10, self.canvas_width / 2)
+            params["height"] = random.uniform(10, self.canvas_height / 2)
+            params["angle"] = random.uniform(0, 360)
+            params["thickness"] = random.uniform(1, 5)
+            params["is_circle"] = random.choice([True, False])
+        elif shape_type == "SolidRectangle":
+            params["center"] = (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
+            params["width"] = random.uniform(10, self.canvas_width / 2)
+            params["height"] = random.uniform(10, self.canvas_height / 2)
+            params["thickness"] = random.uniform(1, 3)
+        elif shape_type == "SolidTriangle":
+            params["vertices"] = [
+                (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
+                for _ in range(3)
+            ]
+            params["thickness"] = random.uniform(1, 3)
+        elif shape_type == "SolidPolygon":
+            num_vertices = random.randint(5, 7)
+            params["num_vertices"] = num_vertices
+            params["vertices"] = [
+                (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
+                for _ in range(num_vertices)
+            ]
+            params["thickness"] = random.uniform(1, 5)
+        # For CompositeShape, we rely on the composite shape generator’s own method.
+        return params
+
+    def shapes_intersect(self, shape1: Any, shape2: Any, resolution: int=50) -> bool:
         """Returns True if shape1 and shape2 have an intersection over a small threshold."""
-        overlap_self, overlap_other = shape1.intersect(shape2, resolution=resolution)
-        threshold = 0.000001  # Very small threshold to detect minimal intersections
+        if shape1 is None or shape2 is None:
+            return False
+        try:
+            overlap_self, overlap_other = shape1.intersect(shape2, resolution=resolution)
+        except Exception:
+            return False
+        threshold: float = 0.000001  # Minimal threshold
         return overlap_self > threshold or overlap_other > threshold
 
-    def is_valid_placement(self, shape, intersect_rules, position_rules, shape_amounts):
+    def is_valid_placement(self, shape: Any, intersect_rules: Dict[str, Any]={}, 
+                           position_rules: Dict[str, Any]={}, shape_amounts: Dict[str, Tuple[int, int]]={}) -> bool:
         """Check if a shape placement is valid according to the given rules."""
-        shape_type = shape.__class__.__name__
-        
-        # Check position constraints
+        shape_type: str = shape.__class__.__name__
+        # Check position constraints if provided.
         if shape_type in position_rules and position_rules[shape_type]:
             x_min, x_max, y_min, y_max = position_rules[shape_type]
             bbox = shape.get_bbox()
             if (bbox[0] < x_min or bbox[2] > x_max or 
                 bbox[1] < y_min or bbox[3] > y_max):
                 return False
-        
-        # Check intersection constraints
+        # Check intersection constraints if provided.
         if shape_type in intersect_rules and intersect_rules[shape_type]:
-            intersections = {}
+            intersections: Dict[str, int] = {}
             for other_shape in self.shapes:
-                other_type = other_shape.__class__.__name__
+                if other_shape is None:
+                    continue
+                other_type: str = other_shape.__class__.__name__
                 if self.shapes_intersect(shape, other_shape):
                     intersections[other_type] = intersections.get(other_type, 0) + 1
-            
             for other_type, max_count in intersect_rules[shape_type]:
                 if other_type in intersections and intersections[other_type] > max_count:
                     return False
-        
-        # Check shape amount constraints
-        shapes_by_type = self.get_shapes_by_type()
+        # Check shape amount constraints if provided.
+        shapes_by_type: Dict[str, List[Any]] = self.get_shapes_by_type()
         if shape_type in shape_amounts and shape_amounts[shape_type]:
             min_count, max_count = shape_amounts[shape_type]
-            current_count = len(shapes_by_type.get(shape_type, []))
+            current_count: int = len(shapes_by_type.get(shape_type, []))
             if current_count >= max_count:
                 return False
-        
         return True
 
-    def add_shape(self, shape_type, intersect_rules={}, position_rules={}, shape_amounts={}, **kwargs):
-        """Add a shape of the given type to the scene with the given constraints."""
+    def add_shape_no_retry(self, shape_type: str, intersect_rules: Dict[str, Any]={}, 
+                             position_rules: Dict[str, Any]={}, shape_amounts: Dict[str, Tuple[int, int]]={}) -> Optional[Any]:
+        """
+        Add a shape of the given type to the scene with the given constraints.
+        This version does not retry; it attempts once and adds the shape only if it passes geometry assignment and bounds.
+        """
         if len(self.shapes) >= self.global_max_shapes:
-            return None  # Or raise an exception if you prefer.
+            return None
         
         if shape_type not in self.shape_classes:
             raise ValueError(f"Unknown shape type: {shape_type}")
         
-        ShapeClass = self.shape_classes[shape_type]
-        
-        for _ in range(self.max_attempts):
-            shape = ShapeClass(canvas=self.canvas, **kwargs)
+        # Save state in case of error.
+        UniqueIDGenerator.save_checkpoint()
+        try:
+            if shape_type != "CompositeShape":
+                params = self.get_random_parameters(shape_type)
+                shape = self.shape_classes[shape_type](canvas=self.canvas, **params)
+            else:
+                # For composite shapes, we create a new generator for each shape.
+                local_comp_gen = self.composite_shape_gen
+                x = random.uniform(0, self.canvas_width)
+                y = random.uniform(0, self.canvas_height)
+                shape = local_comp_gen.generate_shape(
+                    center=(x, y),
+                    scale=random.uniform(0.2, 0.45),
+                    angle=random.uniform(0, 360)
+                )
+            # Call assign_geometry and then enforce bounds.
             shape.assign_geometry()
-            if self.is_valid_placement(shape, intersect_rules, position_rules, shape_amounts):
-                self.shapes.append(shape)
-                return shape
-    
-        return None
-    def get_shapes_by_type(self):
-        """Return a dictionary mapping shape types to lists of shapes of that type."""
-        result = {}
-        for shape in self.shapes:
-            shape_type = shape.__class__.__name__
+            shape.enforce_bounds()
+            # With ~15% probability, set a random label on the shape if available.
+            if random.random() < 0.15:
+                shape.set_label()
+        except Exception:
+            UniqueIDGenerator.load_checkpoint()
+            return None
+        
+        # Accept the shape only if it passes valid placement.
+        if not self.is_valid_placement(shape, intersect_rules, position_rules, shape_amounts):
+            return None
+        self.shapes.append(shape)
+        return shape
+
+    def generate_random_scene(self) -> None:
+        """
+        Generate a random scene with a set number of shapes without any retrying.
+        Basic shapes (without children) are added first, then a group of composite shapes is added.
+        """
+        self.reset()
+        # Add a random number of basic shapes.
+        num_basic_shapes = random.randint(5, self.global_max_shapes)
+        shape_types = list(self.shape_classes.keys())
+        # Exclude composite shapes from basic shapes.
+        basic_types = [st for st in shape_types if st != "CompositeShape"]
+        for _ in range(num_basic_shapes):
+            st = random.choice(basic_types)
+            self.add_shape_no_retry(st)
+        
+        # Always add between 2 and 4 composite shapes.
+        if random.random() < .05:
+            num_composites = random.randint(2, 3)
+            for _ in range(num_composites):
+                self.add_shape_no_retry("CompositeShape")
+            if random.random() < .2:
+                self.composite_shape_gen = CompositeShapeGenerator(canvas=self.canvas)
+                num_composites = random.randint(2, 5)
+                for _ in range(num_composites):
+                    self.add_shape_no_retry("CompositeShape")
+
+    def get_shapes_by_type(self) -> Dict[str, List[Any]]:
+        """Return a dictionary mapping shape types to lists of shapes (including children recursively)."""
+        result: Dict[str, List[Any]] = {}
+        def add_shape_and_children(shape: Any) -> None:
+            shape_type: str = shape.__class__.__name__
             if shape_type not in result:
                 result[shape_type] = []
             result[shape_type].append(shape)
+            children = shape.get_children()
+            if children:
+                for child in children:
+                    add_shape_and_children(child)
+        for shape in self.shapes:
+            add_shape_and_children(shape)
         return result
 
-    def count_shapes_by_type(self):
-        """Return a dictionary mapping shape types to count of shapes."""
+    def count_shapes_by_type(self) -> Dict[str, int]:
+        """Return a dictionary mapping shape types to counts."""
         shapes_by_type = self.get_shapes_by_type()
         return {k: len(v) for k, v in shapes_by_type.items()}
 
-    def add_background_composite_shapes(self):
+    def add_background_composite_shapes(self) -> None:
         """
-        Add composite shapes to the background.
-        Rule: if one composite shape is added, add at least 3 (up to 5) copies.
-        They are generated at a small scale so they do not interfere with the question.
+        Add background composite shapes without retries.
+        Each composite shape is generated with its own generator.
         """
-        # Decide randomly whether to add background composite shapes.
-        if random.random() < 0.5:
-            num_instances = random.randint(3, 5)
-            for _ in range(num_instances):
-                x = random.uniform(0, self.canvas_width)
-                y = random.uniform(0, self.canvas_height)
-                # Use a small scale (e.g., 0.3) and a random rotation.
-                shape = self.composite_shape_gen.generate_shape(center=(x, y), scale=random.uniform(0.2, 0.45), angle=random.uniform(0, 360))
-                self.shapes.append(shape)
+        num_instances: int = random.randint(2, 4)
+        for _ in range(num_instances):
+            local_comp_gen = CompositeShapeGenerator(canvas=self.canvas)
+            x = random.uniform(0, self.canvas_width)
+            y = random.uniform(0, self.canvas_height)
+            try:
+                comp = local_comp_gen.generate_shape(
+                    center=(x, y),
+                    scale=random.uniform(0.2, 0.45),
+                    angle=random.uniform(0, 360)
+                )
+                comp.assign_geometry()
+                comp.enforce_bounds()
+            except Exception:
+                continue
+            if comp.__class__.__name__ == "CompositeShape":
+                self.shapes.append(comp)
 
-    def render(self, ax=None, figsize=(10, 8)):
-        """Render the scene to a matplotlib figure."""
+    def all_shapes_valid(self) -> bool:
+        """Check that all shapes in the scene pass enforce_bounds."""
+        try:
+            for shape in self.shapes:
+                shape.enforce_bounds()
+            return True
+        except Exception:
+            return False
+
+    def render(self, ax: Optional[Any]=None, figsize: Tuple[int, int]=(10, 8)) -> Tuple[Any, Any]:
+        """Render the scene to a matplotlib figure after verifying all shapes are within bounds."""
+        if not self.all_shapes_valid():
+            raise ValueError("Not all shapes are within bounds before rendering.")
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
         else:
@@ -138,8 +271,7 @@ class SceneGenerator:
             shape.render(ax)
         ax.axis('off')
         return fig, ax
-    
-     
+
 
     def get_skill_trace(self):
         """
@@ -241,7 +373,6 @@ class SceneGenerator:
                 # Skip if we've already seen this object
                 if obj_id in seen_objects:
                     continue
-                
                 seen_objects.add(obj_id)
                 
                 # Assign index and count leaf objects
@@ -251,7 +382,7 @@ class SceneGenerator:
                     total_counts[obj_type] += 1
                 
                 # Format the trace
-                part = f"{obj_type} {idx}:"
+                part = f"{obj_id}: "
                 for d in details:
                     if "details" in d:
                         det = d["details"]
@@ -265,23 +396,48 @@ class SceneGenerator:
                 shape_lines.append(" | ".join(line_parts))
 
         # Build header from leaf counts only, with simple pluralization.
-        header_parts = []
-        for obj_type, count in total_counts.items():
-            header_parts.append(f"{count} {obj_type.lower()}{'s' if count != 1 else ''}")
-        header = "There are approximately " + " and ".join(header_parts) + "."
-
-        return header + "\n" + "\n".join(shape_lines)
+        leaf_counts = defaultdict(int)
+        for shape in shapes:
+            if not shape.get_children():
+                shape_type = shape.ALIAS
+                leaf_counts[shape_type] += 1
+        leaf_parts = []
+        for shape_type, count in leaf_counts.items():
+            leaf_parts.append(f"{count} {shape_type.lower()}{'s' if count != 1 else ''}")
+        leaf_sentence = "There are approximately " + " and ".join(leaf_parts) + "."
 
     
-    def save_to_json(self, filename, question, answer, path):
-        """Save the scene, question, and answer to a JSON file in a single-line JSON format.
-        Also, save the image immediately."""
+        composite_aliases = []
+        for shape in shapes:
+            if getattr(shape, "is_composite", False):
+                alias = getattr(shape, "ALIAS", None)
+                composite_aliases.append(alias)
+        # Remove duplicates
+        composite_aliases = list(set(composite_aliases))
+        if composite_aliases:
+            if len(composite_aliases) == 1:
+                composite_sentence = f" I see a repeated complex object in the image; I will call it {composite_aliases[0]}."
+            else:
+                composite_sentence = f" I see repeated complex objects in the image; I will call them {', '.join(composite_aliases)}."
+        else:
+            composite_sentence = ""
+        header = leaf_sentence + composite_sentence + " I will use a pixel as a unit, which may not correspond to in-image measurements, and put the origin at the bottom-left corner. "
+
+        return header + "\n" + " ".join(shape_lines)
+
+    def save_to_json(self, filename: str, question: str, answer: str, path: str) -> Dict[str, Any]:
+        """
+        Save the scene, question, and answer to a JSON file in single-line JSON format.
+        Also, save the image immediately.
+        """
         scene_id = str(uuid.uuid4().hex)
         image_path = f"{path}/scene_{scene_id}.png"
+        if not self.all_shapes_valid():
+            raise ValueError("Final scene contains shapes out of bounds.")
         skill_trace = self.get_skill_trace()
         assistant_response = (
-            f"The scene contains shapes. Before I answer the question, let me parse the geometric shapes. {skill_trace}\n"
-            f"After analyzing, I will now return to the original question: '{question}' - the answer is {answer}."
+            f"The scene contains shapes. Before I answer, let me parse them: {skill_trace}\n"
+            f"Then, the original question: '{question}' - the answer is {answer}."
         )
         json_entry = {
             "messages": [
@@ -298,393 +454,156 @@ class SceneGenerator:
         plt.close(fig)
         return json_entry
 
-    #####################################################################
-    # Methods for generating specific types of question scenes
-    #####################################################################
-    
-    def generate_existence_scene(self, target_shape, min_shapes=3, max_shapes=6):
-        """Generate a scene for 'Is there an X in this image?' questions."""
-        self.reset()
-        include_target = random.random() > 0.5
-        num_shapes = random.randint(min_shapes, max_shapes)
-        shape_types = list(self.shape_classes.keys())
-        if include_target:
-            self.add_shape(target_shape)
-            num_shapes -= 1
-        for _ in range(num_shapes):
-            shape_type = random.choice([s for s in shape_types if s != target_shape])
-            self.add_shape(shape_type)
-        # Add background composite shapes (ensuring if one is added, at least 3 are added)
-        self.add_background_composite_shapes()
-        question = f"Is there a {target_shape.replace('Solid', '')} in this image?"
-        answer = "Yes" if include_target else "No"
-        return question, answer
-    
-    def generate_intersection_scene(self, shape_type1, shape_type2):
-        """Generate a scene for 'Does an X intersect with a Y?' questions."""
-        self.reset()
-        should_intersect = random.random() > 0.5
-        shape1 = self.add_shape(shape_type1)
-        if should_intersect:
-            for _ in range(self.max_attempts):
-                shape2 = self.add_shape(shape_type2)
-                if shape2 and self.shapes_intersect(shape1, shape2):
-                    break
-                if shape2:
-                    self.shapes.remove(shape2)
-        else:
-            intersect_rules = {shape_type2: [(shape_type1, 0)]}
-            self.add_shape(shape_type2, intersect_rules=intersect_rules)
-        for _ in range(random.randint(1, 3)):
-            st = random.choice(list(self.shape_classes.keys()))
-            self.add_shape(st)
-        self.add_background_composite_shapes()
-        shape1_name = shape_type1.replace('Solid', '')
-        shape2_name = shape_type2.replace('Solid', '')
-        question = f"Does a {shape1_name} intersect with a {shape2_name} in this image?"
-        shapes_by_type = self.get_shapes_by_type()
-        intersection_exists = False
-        if shape_type1 in shapes_by_type and shape_type2 in shapes_by_type:
-            for s1 in shapes_by_type[shape_type1]:
-                for s2 in shapes_by_type[shape_type2]:
-                    if self.shapes_intersect(s1, s2):
-                        intersection_exists = True
-                        break
-        answer = "Yes" if intersection_exists else "No"
-        return question, answer
-
-    def generate_intersection_count_scene(self, shape_type1, shape_type2, max_count=5):
-        """Generate a scene for 'How many X intersect with Ys?' questions."""
-        self.reset()
-        target_intersections = random.randint(0, max_count)
-        num_type1 = random.randint(max(1, target_intersections), max_count + 2)
-        for _ in range(num_type1):
-            self.add_shape(shape_type1)
-        shapes_by_type = self.get_shapes_by_type()
-        type1_shapes = shapes_by_type.get(shape_type1, [])
-        intersecting_shapes1 = random.sample(type1_shapes, min(target_intersections, len(type1_shapes)))
-        for shape1 in intersecting_shapes1:
-            for _ in range(self.max_attempts):
-                shape2 = self.add_shape(shape_type2)
-                if shape2 and self.shapes_intersect(shape1, shape2):
-                    break
-                if shape2:
-                    self.shapes.remove(shape2)
-        num_non_intersecting = random.randint(0, 3)
-        for _ in range(num_non_intersecting):
-            intersect_rules = {shape_type2: [(shape_type1, 0)]}
-            self.add_shape(shape_type2, intersect_rules=intersect_rules)
-        shapes_by_type = self.get_shapes_by_type()
-        intersection_count = 0
-        if shape_type1 in shapes_by_type and shape_type2 in shapes_by_type:
-            for shape1 in shapes_by_type[shape_type1]:
-                for shape2 in shapes_by_type[shape_type2]:
-                    if self.shapes_intersect(shape1, shape2):
-                        intersection_count += 1
-                        break
-        self.add_background_composite_shapes()
-        shape1_name = shape_type1.replace('Solid', '')
-        shape2_name = shape_type2.replace('Solid', '')
-        question = f"How many {shape1_name}s intersect with {shape2_name}s in this image?"
-        answer = str(intersection_count)
-        return question, answer
-
-    def generate_position_scene(self, shape_type1, shape_type2, position):
-        """Generate a scene for 'Is there an X above/below/left/right of a Y?' questions."""
-        self.reset()
-        should_satisfy = random.random() > 0.5
-        if should_satisfy:
-            if position == "above":
-                shape2 = self.add_shape(shape_type2)
-                bbox2 = shape2.get_bbox()
-                position_rules = {shape_type1: (0, self.canvas_width, bbox2[3], self.canvas_height)}
-                self.add_shape(shape_type1, position_rules=position_rules)
-            elif position == "below":
-                shape2 = self.add_shape(shape_type2)
-                bbox2 = shape2.get_bbox()
-                position_rules = {shape_type1: (0, self.canvas_width, 0, bbox2[1])}
-                self.add_shape(shape_type1, position_rules=position_rules)
-            elif position == "left of":
-                shape2 = self.add_shape(shape_type2)
-                bbox2 = shape2.get_bbox()
-                position_rules = {shape_type1: (0, bbox2[0], 0, self.canvas_height)}
-                self.add_shape(shape_type1, position_rules=position_rules)
-            elif position == "right of":
-                shape2 = self.add_shape(shape_type2)
-                bbox2 = shape2.get_bbox()
-                position_rules = {shape_type1: (bbox2[2], self.canvas_width, 0, self.canvas_height)}
-                self.add_shape(shape_type1, position_rules=position_rules)
-        else:
-            self.add_shape(shape_type1)
-            self.add_shape(shape_type2)
-        for _ in range(random.randint(1, 3)):
-            st = random.choice(list(self.shape_classes.keys()))
-            self.add_shape(st)
-        self.add_background_composite_shapes()
-        shape1_name = shape_type1.replace('Solid', '')
-        shape2_name = shape_type2.replace('Solid', '')
-        question = f"Is there a {shape1_name} {position} a {shape2_name} in this image?"
-        shapes_by_type = self.get_shapes_by_type()
-        is_true = False
-        if shape_type1 in shapes_by_type and shape_type2 in shapes_by_type:
-            for shape1 in shapes_by_type[shape_type1]:
-                for shape2 in shapes_by_type[shape_type2]:
-                    bbox1 = shape1.get_bbox()
-                    bbox2 = shape2.get_bbox()
-                    if (position == "above" and bbox1[1] > bbox2[3]) or \
-                       (position == "below" and bbox1[3] < bbox2[1]) or \
-                       (position == "left of" and bbox1[2] < bbox2[0]) or \
-                       (position == "right of" and bbox1[0] > bbox2[2]):
-                        is_true = True
-                        break
-        answer = "Yes" if is_true else "No"
-        return question, answer
-
-    def generate_count_scene(self, target_shape, min_count=0, max_count=5):
-        """Generate a scene for 'How many X are there?' questions."""
-        self.reset()
-        count = random.randint(min_count, max_count)
-        for _ in range(count):
-            self.add_shape(target_shape)
-        num_others = random.randint(1, 5)
-        shape_types = [s for s in self.shape_classes.keys() if s != target_shape]
-        for _ in range(num_others):
-            st = random.choice(shape_types)
-            self.add_shape(st)
-        self.add_background_composite_shapes()
-        shape_name = target_shape.replace('Solid', '')
-        question = f"How many {shape_name}s are there in this image?"
-        answer = str(count)
-        return question, answer
-
-    def generate_multiple_count_scene(self, shape_type1, shape_type2, max_count=5):
-        """Generate a scene for 'How many X and Y are there?' questions."""
-        self.reset()
-        count1 = random.randint(0, max_count)
-        count2 = random.randint(0, max_count)
-        for _ in range(count1):
-            self.add_shape(shape_type1)
-        for _ in range(count2):
-            self.add_shape(shape_type2)
-        num_others = random.randint(1, 3)
-        shape_types = [s for s in self.shape_classes.keys() if s not in [shape_type1, shape_type2]]
-        for _ in range(num_others):
-            st = random.choice(shape_types)
-            self.add_shape(st)
-        self.add_background_composite_shapes()
-        shape1_name = shape_type1.replace('Solid', '')
-        shape2_name = shape_type2.replace('Solid', '')
-        question = f"How many {shape1_name}s and {shape2_name}s are there in this image?"
-        answer = str(count1 + count2)
-        return question, answer
-
-    def generate_most_common_scene(self, min_total=5, max_total=10):
-        """Generate a scene for 'What shape occurs the most?' questions."""
-        self.reset()
-        total_shapes = random.randint(min_total, max_total)
-        # Include composite shapes as candidates by using the full keys from shape_classes.
-        shape_types = list(self.shape_classes.keys())
-        chosen_majority = random.choice(shape_types)
-        majority_count = int(total_shapes * random.uniform(0.4, 0.6))
-        remaining_count = total_shapes - majority_count
-        other_types = [t for t in shape_types if t != chosen_majority]
-        other_counts = [0] * len(other_types)
-        for _ in range(remaining_count):
-            idx = random.randint(0, len(other_types) - 1)
-            other_counts[idx] += 1
-        for _ in range(majority_count):
-            self.add_shape(chosen_majority)
-        for shape_type, count in zip(other_types, other_counts):
-            for _ in range(count):
-                self.add_shape(shape_type)
-        self.add_background_composite_shapes()
-        question = "What shape occurs the most in this image?"
-        # The answer may now be a composite shape as well.
-        answer = chosen_majority.replace('Solid', '')
-        return question, answer
-
-    def generate_area_comparison_scene(self, comparison_type="highest"):
-        """Generate a scene for 'Which shape has the highest/lowest area?' questions."""
-        self.reset()
-        shape_types = list(self.shape_classes.keys())
-        target_shape = random.choice(shape_types)
-        for shape_type in shape_types:
-            if shape_type == target_shape:
-                if comparison_type == "highest":
-                    if shape_type == "SolidOval":
-                        radius = random.uniform(80, 120)
-                        self.add_shape(shape_type, width=radius*2, height=radius*2, is_circle=True)
-                    elif shape_type == "SolidRectangle":
-                        width = random.uniform(150, 200)
-                        height = random.uniform(150, 200)
-                        self.add_shape(shape_type, width=width, height=height)
-                    else:
-                        self.add_shape(shape_type)
-                else:
-                    if shape_type == "SolidOval":
-                        radius = random.uniform(10, 20)
-                        self.add_shape(shape_type, width=radius*2, height=radius*2, is_circle=True)
-                    elif shape_type == "SolidRectangle":
-                        width = random.uniform(20, 40)
-                        height = random.uniform(20, 40)
-                        self.add_shape(shape_type, width=width, height=height)
-                    else:
-                        self.add_shape(shape_type)
-            else:
-                if shape_type == "SolidOval":
-                    radius = random.uniform(30, 60)
-                    self.add_shape(shape_type, width=radius*2, height=radius*2, is_circle=True)
-                elif shape_type == "SolidRectangle":
-                    width = random.uniform(60, 100)
-                    height = random.uniform(60, 100)
-                    self.add_shape(shape_type, width=width, height=height)
-                else:
-                    self.add_shape(shape_type)
-        self.add_background_composite_shapes()
-        question = f"Which shape has the {comparison_type} area in this image?"
-        answer = target_shape.replace('Solid', '')
-        return question, answer
-
-    def generate_scene_with_constraints(self, intersect_rules={}, position_rules={}, shape_amounts={}, question_type="", **kwargs):
-        """Generate a scene based on provided constraints for a specific question type.
-        
-        This version randomly selects valid shape types (including the CompositeShape option)
-        based on the question type. For example, questions about area comparison will never use
-        a "Line" (which has no area). Other types are chosen from all valid keys.
+    def generate_question_and_answer(self) -> Tuple[str, str]:
         """
-        # Define valid shape lists per question type.
-        valid_for_existence = [s for s in self.shape_classes.keys() if s not in ["Line"]]
-        valid_for_intersection = list(self.shape_classes.keys())  # All shapes allowed.
-        valid_for_position = [s for s in self.shape_classes.keys() if s not in ["Line"]]
-        valid_for_count = [s for s in self.shape_classes.keys() if s not in ["Line"]]
-        valid_for_multiple_count = [s for s in self.shape_classes.keys() if s not in ["Line"]]
-        valid_for_area = [s for s in self.shape_classes.keys() if s not in ["Line"]]
+        Generate a random question and its answer based on the current scene.
+        No retries are done; the question is computed from the scene as is.
+        """
+        question_types = ["existence", "intersection", "intersection_count", 
+                          "position", "count", "multiple_count", "most_common", "area_comparison"]
+        chosen = random.choice(question_types)
+        if chosen == "existence":
+            valid = [s for s in self.shape_classes.keys() if s != "Line"]
+            target = random.choice(valid)
+            shapes_by_type = self.get_shapes_by_type()
+            answer = "Yes" if target in shapes_by_type and len(shapes_by_type[target]) > 0 else "No"
+            question_text = f"Is there a {target.replace('Solid','')} in this image?"
+            return question_text, answer
+        elif chosen == "intersection":
+            shape_types = list(self.shape_classes.keys())
+            shape1 = random.choice(shape_types)
+            shape2 = random.choice(shape_types)
+            shapes_by_type = self.get_shapes_by_type()
+            exists = False
+            if shape1 in shapes_by_type and shape2 in shapes_by_type:
+                for s1 in shapes_by_type[shape1]:
+                    for s2 in shapes_by_type[shape2]:
+                        if self.shapes_intersect(s1, s2):
+                            exists = True
+                            break
+            answer = "Yes" if exists else "No"
+            question_text = f"Does a {shape1.replace('Solid','')} intersect with a {shape2.replace('Solid','')} in this image?"
+            return question_text, answer
+        elif chosen == "intersection_count":
+            shape_types = list(self.shape_classes.keys())
+            shape1 = random.choice(shape_types)
+            shape2 = random.choice(shape_types)
+            shapes_by_type = self.get_shapes_by_type()
+            count = 0
+            if shape1 in shapes_by_type and shape2 in shapes_by_type:
+                for s1 in shapes_by_type[shape1]:
+                    for s2 in shapes_by_type[shape2]:
+                        if self.shapes_intersect(s1, s2):
+                            count += 1
+                            break
+            question_text = f"How many {shape1.replace('Solid','')}s intersect with {shape2.replace('Solid','')}s in this image?"
+            return question_text, str(count)
+        elif chosen == "position":
+            valid = [s for s in self.shape_classes.keys() if s != "Line"]
+            shape1 = random.choice(valid)
+            shape2 = random.choice(valid)
+            relation = random.choice(["above", "below", "left of", "right of"])
+            shapes_by_type = self.get_shapes_by_type()
+            exists = False
+            if shape1 in shapes_by_type and shape2 in shapes_by_type:
+                for s1 in shapes_by_type[shape1]:
+                    for s2 in shapes_by_type[shape2]:
+                        bbox1 = s1.get_bbox()
+                        bbox2 = s2.get_bbox()
+                        if (relation == "above" and bbox1[1] > bbox2[3]) or \
+                           (relation == "below" and bbox1[3] < bbox2[1]) or \
+                           (relation == "left of" and bbox1[2] < bbox2[0]) or \
+                           (relation == "right of" and bbox1[0] > bbox2[2]):
+                            exists = True
+                            break
+            answer = "Yes" if exists else "No"
+            question_text = f"Is there a {shape1.replace('Solid','')} {relation} a {shape2.replace('Solid','')} in this image?"
+            return question_text, answer
+        elif chosen == "count":
+            valid = [s for s in self.shape_classes.keys() if s != "Line"]
+            target = random.choice(valid)
+            shapes_by_type = self.get_shapes_by_type()
+            count = len(shapes_by_type.get(target, []))
+            question_text = f"How many {target.replace('Solid','')}s are there in this image?"
+            return question_text, str(count)
+        elif chosen == "multiple_count":
+            valid = [s for s in self.shape_classes.keys() if s != "Line"]
+            shape1 = random.choice(valid)
+            shape2 = random.choice(valid)
+            shapes_by_type = self.get_shapes_by_type()
+            count = len(shapes_by_type.get(shape1, [])) + len(shapes_by_type.get(shape2, []))
+            question_text = f"How many {shape1.replace('Solid','')}s and {shape2.replace('Solid','')}s are there in this image?"
+            return question_text, str(count)
+        elif chosen == "most_common":
+            shapes_by_type = self.get_shapes_by_type()
+            counts = {k: len(v) for k, v in shapes_by_type.items()}
+            if not counts:
+                answer = "N/A"
+                question_text = "Which shape appears the most in this image?"
+            else:
+                max_count_val = max(counts.values())
+                most_common = [k for k, v in counts.items() if v == max_count_val]
+                answer = ", ".join([mc.replace('Solid','') for mc in most_common])
+                question_text = "Which shape appears the most in this image?"
+            return question_text, answer
+        elif chosen == "area_comparison":
+            shape_types = list(self.shape_classes.keys())
+            best = None
+            best_area = -math.inf
+            for shape in self.shapes:
+                try:
+                    area = shape.get_area()
+                    if area > best_area:
+                        best_area = area
+                        best = shape.__class__.__name__
+                except Exception:
+                    continue
+            if best is None:
+                best = random.choice(shape_types)
+            relation = random.choice(["highest", "lowest"])
+            question_text = f"Which shape has the {relation} area in this image?"
+            answer = best.replace('Solid','')
+            return question_text, answer
 
-        if question_type == "existence":
-            target_shape = kwargs.get("target_shape", random.choice(valid_for_existence))
-            return self.generate_existence_scene(target_shape)
-        elif question_type == "intersection":
-            shape_type1 = kwargs.get("shape_type1", random.choice(valid_for_intersection))
-            shape_type2 = kwargs.get("shape_type2", random.choice(valid_for_intersection))
-            return self.generate_intersection_scene(shape_type1, shape_type2)
-        elif question_type == "intersection_count":
-            shape_type1 = kwargs.get("shape_type1", random.choice(valid_for_intersection))
-            shape_type2 = kwargs.get("shape_type2", random.choice(valid_for_intersection))
-            return self.generate_intersection_count_scene(shape_type1, shape_type2)
-        elif question_type == "position":
-            shape_type1 = kwargs.get("shape_type1", random.choice(valid_for_position))
-            shape_type2 = kwargs.get("shape_type2", random.choice(valid_for_position))
-            position = kwargs.get("position", random.choice(["above", "below", "left of", "right of"]))
-            return self.generate_position_scene(shape_type1, shape_type2, position)
-        elif question_type == "count":
-            target_shape = kwargs.get("target_shape", random.choice(valid_for_count))
-            return self.generate_count_scene(target_shape)
-        elif question_type == "multiple_count":
-            shape_type1 = kwargs.get("shape_type1", random.choice(valid_for_multiple_count))
-            shape_type2 = kwargs.get("shape_type2", random.choice(valid_for_multiple_count))
-            return self.generate_multiple_count_scene(shape_type1, shape_type2)
-        elif question_type == "most_common":
-            return self.generate_most_common_scene()
-        elif question_type == "area_comparison":
-            comparison_type = kwargs.get("comparison_type", random.choice(["highest", "lowest"]))
-            # Only choose shapes that have an area (i.e. excluding Line)
-            return self.generate_area_comparison_scene(comparison_type)
-        else:
-            # For a custom scene, randomly distribute shapes across all valid types.
-            self.reset()
-            for shape_type, (min_count, max_count) in shape_amounts.items():
-                if max_count > 0:
-                    count = random.randint(min_count, max_count)
-                    for _ in range(count):
-                        self.add_shape(shape_type, intersect_rules, position_rules, shape_amounts)
-            self.add_background_composite_shapes()
-            return "Custom scene created", "N/A"
-
-
-def generate_dataset(output_file="scene_dataset.json", num_examples=50, output_image_path="output"):
-    """Generate a dataset of scenes and questions.
-    Each question-answer-image JSON entry is printed immediately in single-line JSON format
-    and also written to the output file line-by-line.
+def generate_dataset(output_file: str="scene_dataset7.json", num_examples: int=50, output_image_path: str="output") -> None:
+    """
+    Generate a dataset of scenes and questions.
+    Each entry is output in a single-line JSON format.
+    This function generates each scene once without retries.
     """
     generator = SceneGenerator()
     
-    question_types = [
-        "existence", "intersection", "intersection_count", 
-        "position", "count", "multiple_count", 
-        "most_common", "area_comparison"
-    ]
-    
     with open(output_file, 'w') as f_out:
         for _ in range(num_examples):
-            # Randomly select a question type and generate scene
-            question_type = random.choice(question_types)
-            question, answer = generator.generate_scene_with_constraints(question_type=question_type)
-            
-            # Save scene immediately (image is saved during this call)
+            generator.generate_random_scene()
+            question, answer = generator.generate_question_and_answer()
             temp_file = f"temp_scene_{uuid.uuid4().hex}.json"
-            json_entry = generator.save_to_json(temp_file, question, answer, output_image_path)
-            
-            # Remove the temporary JSON file used internally
+            try:
+                json_entry = generator.save_to_json(temp_file, question, answer, output_image_path)
+            except Exception:
+                continue
             if os.path.exists(temp_file):
                 os.remove(temp_file)
-            
-            # Convert the entry to a single-line JSON string and output it immediately
             json_line = json.dumps(json_entry, separators=(',',':'))
             print(json_line)
             f_out.write(json_line + "\n")
     
     print(f"Generated {num_examples} examples and saved to {output_file}")
+    print("Failure counts per question type:", generator.fail_counts)
+
 if __name__ == "__main__":
-    # Example usage
     generator = SceneGenerator()
     
-    # Example: Generate an existence question for rectangles
-    question, answer = generator.generate_scene_with_constraints(question_type="existence", target_shape="SolidRectangle")
+    # Generate a random scene (no retries) and then generate a random question & answer from it.
+    generator.generate_random_scene()
+    question, answer = generator.generate_question_and_answer()
     print(f"Question: {question}")
     print(f"Answer: {answer}")
     
-    # Example: Generate an intersection question
-    question, answer = generator.generate_scene_with_constraints(question_type="intersection", 
-                                                               shape_type1="SolidRectangle", 
-                                                               shape_type2="Line")
-    print(f"Question: {question}")
-    print(f"Answer: {answer}")
+    try:
+        fig, ax = generator.render()
+        plt.show()
+    except Exception as e:
+        print("Rendering failed:", e)
     
-    # Example: Generate with specific constraints
-    intersect_rules = {
-        "SolidRectangle": [("Line", 1)],  # rectangle can intersect with a line once
-        "SolidTriangle": [],
-        "SolidOval": [],
-        "SolidPolygon": [],
-        "Line": []
-    }
-    
-    position_rules = {
-        "SolidRectangle": (0, 300, 0, 300),  # can only appear in this box
-        "SolidTriangle": [],
-        "SolidOval": [],
-        "SolidPolygon": [],
-        "Line": []
-    }
-    
-    shape_amounts = {
-        "SolidRectangle": (1, 3),  # min 1, max 3
-        "SolidTriangle": (0, 4),   # min 0, max 4
-        "SolidOval": (1, 2),       # min 1, max 2
-        "SolidPolygon": (0, 1),    # min 0, max 1
-        "Line": (2, 5)             # min 2, max 5
-    }
-    
-    # Generate a custom scene with constraints
-    generator.generate_scene_with_constraints(
-        intersect_rules=intersect_rules,
-        position_rules=position_rules,
-        shape_amounts=shape_amounts
-    )
-    
-    # Visualize
-    fig, ax = generator.render()
-    plt.show()
-    
-    # Generate a small dataset
-    generate_dataset(num_examples=10, output_image_path="/n/fs/penciller/skilltree2/geometry/output")
+    generate_dataset(num_examples=20000, output_image_path="/n/fs/penciller/skilltree2/geometry/output")

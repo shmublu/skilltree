@@ -49,6 +49,8 @@ def get_line_length_and_angle(p1, p2):
     dy = p2[1] - p1[1]
     length = math.hypot(dx, dy)
     angle = math.degrees(math.atan2(dy, dx))
+    if angle < 0:
+        angle += 360
     return length, angle
 
 def rotate_point(point, center, angle):

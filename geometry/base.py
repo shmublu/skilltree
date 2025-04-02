@@ -88,11 +88,42 @@ class PlotObject:
     def render(self, ax):
         """Render self (and children) on the provided matplotlib axis."""
         for child in self.sub_references:
-            child.render(ax)
-
+            child.render(ax)  
     def __repr__(self):
         return f"{self.ALIAS}#{self.obj_id}"
+    def set_label(self):
+        import random
+        import string
 
+        choice = random.random()
+        if random.random() < .25:
+            clist = self.get_children()
+            for c in clist:
+                if random.random() < .25:
+                    c.set_label()
+            return
+            
+
+        if choice < 1/3:
+            # Random string with first letter capitalized
+            length = random.randint(3, 10)
+            random_string = ''.join(random.choice(string.ascii_lowercase) for _ in range(length))
+            self.label = random_string.capitalize()
+        elif choice < 2/3:
+            # Number between 1 and 1000
+            self.label = str(random.randint(1, 1000))
+        elif choice < 2/3 + 1/4:
+            # Random alphanumeric string
+            length = random.randint(3, 10)
+            self.label = ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
+        else:
+            # Two random words from two lists of nouns
+            nouns_list1 = ["Apple", "Mountain", "Ocean", "Forest", "Diamond", "Castle", "River", "Desert", "Island", "Galaxy", "Thunder", "Crystal", "Dragon", "Phoenix", "Emerald", "Banana", "President", "Large", "Small", "Giant"]
+            nouns_list2 = ["Wizard", "Knight", "Hunter", "Tiger", "Eagle", "Falcon", "Warrior", "Shadow", "Spirit", "Legend", "Phantom", "Guardian", "Titan", "Voyager", "Pioneer", "Winner", "Object", "Shape-thing", "Cannonball"]
+            
+            noun1 = random.choice(nouns_list1)
+            noun2 = random.choice(nouns_list2)
+            self.label = f"{noun1} {noun2}"
     def set_bottom_left(self, x, y, angle=0, **kwargs):
         """To be overridden by subclasses to set the shape’s position."""
         pass
