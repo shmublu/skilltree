@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import re
 from decimal import Decimal, ROUND_HALF_UP
 import copy
+from utilities import color_to_name
 # Disable interactive mode and set backend for consistency.
 plt.ioff()
 matplotlib.use("Agg", force=True)
@@ -48,7 +49,6 @@ class PlotObject:
         self.obj_id = UniqueIDGenerator.get_unique_id(self.ALIAS)
         self._geometry_locked = False
         self.sub_references = []  # For future composite objects; currently not used.
-        
         # Optional visual attributes
         self.label = None              # Text label (optional)
         self.has_border = False        # Shapes (except lines) can have borders.
@@ -85,6 +85,47 @@ class PlotObject:
     def get_children(self):
         """Method to get children shapes; returns a list of PlotObjects. If there are none, returns None"""
         return getattr(self, 'children', None)
+    def get_color(self):
+        color = getattr(self, 'color', None)
+        if color:
+            return color
+        try:
+            fill_color = getattr(self, 'fill_color', None)
+            border_color = getattr(self, 'border_color', None)
+            return color_to_name(fill_color) + " and " + color_to_name(border_color)
+        except:
+            return None
+    def get_label(self):
+        return self.label
+    def get_alias(self):
+        return self.ALIAS
+    def get_area(self):
+        if hasattr(self, 'p1') or hasattr(self, 'p2') or getattr(self, 'is_composite', False):
+            return 0
+        alias = self.ALIAS
+        if alias == 'Oval':
+            return math.pi * (self.width / 2) * (self.height / 2)
+
+        elif alias == 'Rectangle':
+            return self.width * self.height
+
+        elif alias == 'Triangle':
+            return 0.5 * abs(self.vertices[0][0] * (self.vertices[1][1] - self.vertices[2][1]) +
+                             self.vertices[1][0] * (self.vertices[2][1] - self.vertices[0][1]) +
+                             self.vertices[2][0] * (self.vertices[0][1] - self.vertices[1][1]))
+
+        elif alias == 'Polygon':
+            vertices = self.vertices
+            n = len(vertices)
+            area = 0.0
+            for i in range(n):
+                j = (i + 1) % n
+                area += vertices[i][0] * vertices[j][1]
+                area -= vertices[j][0] * vertices[i][1]
+            return abs(area) / 2.0
+
+        else:
+            return 0  # Default to 0 if shape is unknown
     def render(self, ax):
         """Render self (and children) on the provided matplotlib axis."""
         for child in self.sub_references:
@@ -195,27 +236,11 @@ class PlotObject:
         return (0, 0, 0, 0)
 
     def enforce_bounds(self):
-        """
-        Adjust the object’s coordinates to ensure the entire object lies within the canvas.
-        This method uses the bounding box and shifts the object by the necessary offset.
-        """
         bbox = self.get_bbox()
-        dx = 0
-        dy = 0
-        if bbox[0] < 0:
-            dx = -bbox[0]
-        elif bbox[2] > self.CANVAS_WIDTH:
-            dx = self.CANVAS_WIDTH - bbox[2]
-        if bbox[1] < 0:
-            dy = -bbox[1]
-        elif bbox[3] > self.CANVAS_HEIGHT:
-            dy = self.CANVAS_HEIGHT - bbox[3]
-
-        # Only adjust if an offset is needed.
-        if dx != 0 or dy != 0:
-            def shift(point):
-                return (point[0] + dx, point[1] + dy)
-            self.apply_transformation(shift)
+        xmin, xmax, ymin, ymax = self.canvas
+        if (bbox[0] < xmin or bbox[2] > xmax or bbox[1] < ymin or bbox[3] > ymax):
+            raise ValueError(f"Shape exceeds canvas bounds: {bbox} vs canvas {self.canvas}")
+    
 
     def generate_random_label(self, label_type="alpha", length=6):
         """

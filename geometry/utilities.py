@@ -2,6 +2,47 @@
 import math, random
 import numpy as np
 
+import webcolors
+from typing import Tuple, Optional
+
+def replace_polygon(s):
+    if s.lower() == 'polygon':
+        return "non-rectangular, non-triangular Polygon"
+    else:
+        return s
+
+def color_to_name(rgb_or_rgba: Tuple[float, ...]) -> Optional[str]:
+    """
+    Converts an RGB or RGBA color tuple to a color name.
+
+    Args:
+        rgb_or_rgba: A tuple representing the color, either (R, G, B) or (R, G, B, A),
+                     where R, G, B, and A are floats in the range [0.0, 1.0].
+
+    Returns:
+        The name of the color, or None if no matching name is found.
+    """
+    if type(rgb_or_rgba) == str:
+        return rgb_or_rgba
+    if not (3 <= len(rgb_or_rgba) <= 4):
+        raise ValueError("Input must be an RGB or RGBA tuple.")
+
+    rgb = tuple(int(c * 255) for c in rgb_or_rgba[:3])  # Convert floats to integers in [0, 255]
+
+    try:
+        # Try to get the exact name first.
+        return webcolors.rgb_to_name(rgb)
+    except ValueError:
+        # If exact name is not found, try to get the closest name.
+        try:
+            return webcolors.rgb_to_name(rgb, spec='css3') #use css3 for better support.
+        except ValueError:
+             try:
+                return webcolors.rgb_to_name(rgb, spec='html4') #try html4 as a fallback.
+             except ValueError:
+                return None
+
+
 def handwritten_path(p1, p2, steps=20, jitter=5):
     """
     Generate a momentum-based jittered path from p1 to p2.

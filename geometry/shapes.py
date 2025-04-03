@@ -9,33 +9,33 @@ import matplotlib.colors as mcolors
 import numpy as np
 
 from base import PlotObject
-from utilities import get_line_length_and_angle, rotate_point
+from utilities import get_line_length_and_angle, rotate_point, color_to_name
 
 ###############################################################################
 # Utility functions for style and geometry
 ###############################################################################
 def random_border_color(fill_color=None):
     r = random.random()
-    if fill_color is not None:
-        if r < 0.25:
+    if fill_color is not None and fill_color != mcolors.to_rgba("white", 0.0):
+        if r < 0.4:
             return fill_color
-        elif r < 0.25 + 0.24:
+        elif r < .55:
             return "black"
         else:
-            return random.choice(["red", "blue", "green", "purple", "orange"])
+            return random.choice(["red", "blue", "green", "purple", "orange", "black", "yellow", "lavender"])
     else:
         if r < 0.33:
             return "black"
         else:
-            return random.choice(["red", "blue", "green", "purple", "orange"])
+            return random.choice(["red", "blue", "green", "purple", "orange", "black"])
 
 def random_fill_color():
     # Return colors with alpha transparency (0.3-0.5)
     alpha = random.uniform(0.2, 0.6)
-    if random.random() < 0.5:
+    if random.random() < 0.33:
         rgba = mcolors.to_rgba("white", 0.0)
         return rgba
-    base_color = random.choice(["red", "blue", "green", "purple", "orange"])
+    base_color = random.choice(["red", "blue", "green", "purple", "orange", "pink", "lightblue", "yellow", "lavender"])
     rgba = mcolors.to_rgba(base_color, alpha)
     return rgba
 
@@ -257,8 +257,8 @@ class Line(PlotObject):
             "action": "RecognizeInstanceLine",
             "object": f"Line#{self.obj_id}" if not self.label else f"Line#{self.obj_id} labeled as {self.label}",
             "details": [
-                {"action": "LocalizeLine", "object": f"Line#{self.obj_id}", "details": f"(Endpoints: {e1}, {e2}{label_info})"},
-                {"action": "MeasureLine", "object": f"Line#{self.obj_id}", "details": f"(Length={length}, Angle={angle})"}
+                {"action": "LocalizeLine", "object": f"Line#{self.obj_id}", "details": f"(Endpoints: {e1}, {e2}{label_info},"},
+                {"action": "MeasureLine", "object": f"Line#{self.obj_id}", "details": f" Length:{length}, Angle:{angle}, Color: {self.color})"}
             ]
         }
         if verbose:
@@ -376,14 +376,14 @@ class SolidOval(PlotObject):
         height_rounded = round_to_nearest(self.height,1)
         angle_rounded = round_to_nearest(self.angle, 5)
         area_rounded = round_to_nearest((self.width * self.height * math.pi / 4), 1)
-        
+        color = f" Color: {color_to_name(self.fill_color)}" if self.fill_color == self.border_color else f"Fill & Border Color: {color_to_name(self.fill_color)}, {color_to_name(self.border_color)}"
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "RecognizeInstanceOval",
             "object": f"Oval#{self.obj_id}" if not self.label else f"Oval#{self.obj_id} labeled as {self.label}",
             "details": [
-                {"action": "LocalizeOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Center: {center_rounded}, W={width_rounded}, H={height_rounded}, Angle={angle_rounded}{label_info})"},
-                {"action": "MeasureOval", "object": f"SolidOval#{self.obj_id}", "details": f" (Approximate Area={area_rounded})"}
+                {"action": "LocalizeOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Center: {center_rounded}, W={width_rounded}, H={height_rounded}, Angle={angle_rounded}{label_info}, "},
+                {"action": "MeasureOval", "object": f"SolidOval#{self.obj_id}", "details": f" Area: {area_rounded}, {color})"}
             ]
         }
         
@@ -420,21 +420,33 @@ class SolidRectangle(PlotObject):
             xmin, xmax, ymin, ymax = self.canvas
             canvas_width = xmax - xmin
             canvas_height = ymax - ymin
+
+            # Assign angle first to use for bounding box computation.
+            if self.angle is None:
+                self.angle = random.uniform(0, 180)
+            rad = math.radians(self.angle)
+
+            # Choose width; if not provided, pick a random value.
             if self.width is None:
                 self.width = random.uniform(canvas_width * 0.15, canvas_width * 0.7)
+            
+            # Choose height; if not provided, pick a random value.
+            # If the shape is square, enforce height == width.
             if self.height is None:
                 self.height = random.uniform(canvas_height * 0.15, canvas_height * 0.7)
             if self.is_square:
-                abs(self.height - self.width) < self.width * .02
+                self.height = self.width
+
+            # Compute rotated bounding box dimensions.
+            bbox_w = abs(self.width * math.cos(rad)) + abs(self.height * math.sin(rad))
+            bbox_h = abs(self.width * math.sin(rad)) + abs(self.height * math.cos(rad))
+
+            # Choose center ensuring the full rectangle (after rotation) fits within the canvas.
             if self.center is None:
-                rad = math.radians(self.angle if self.angle is not None else 0)
-                bbox_w = abs(self.width * math.cos(rad)) + abs(self.height * math.sin(rad))
-                bbox_h = abs(self.width * math.sin(rad)) + abs(self.height * math.cos(rad))
-                cx = random.uniform(xmin + bbox_w/2, xmax - bbox_w/2)
-                cy = random.uniform(ymin + bbox_h/2, ymax - bbox_h/2)
+                cx = random.uniform(xmin + bbox_w / 2, xmax - bbox_w / 2)
+                cy = random.uniform(ymin + bbox_h / 2, ymax - bbox_h / 2)
                 self.center = (cx, cy)
-            if self.angle is None:
-                self.angle = random.uniform(0, 180)
+
         self.enforce_bounds()
         self.lock_geometry()
     def create_children(self):
@@ -458,16 +470,18 @@ class SolidRectangle(PlotObject):
                 self.children.append(line)
     def render(self, ax):
         if not self._geometry_locked:
-            raise AssertionError("Geoemetry was not assigned and tried to print skills.")
+            raise AssertionError("Geometry was not assigned and tried to print skills.")
         rect = Rectangle((-self.width/2, -self.height/2), self.width, self.height,
-                         edgecolor=self.border_color,
-                         facecolor=self.fill_color,
-                         lw=self.thickness)
+                        edgecolor=self.border_color,
+                        facecolor=self.fill_color,
+                        lw=self.thickness)
         import matplotlib.transforms as transforms
-        t = transforms.Affine2D().rotate_deg(self.angle).translate(self.center[0], self.center[1]) + ax.transData
+        # Create a transform that first translates to center position
+        # Then rotates around that center point
+        t = transforms.Affine2D().translate(self.center[0], self.center[1]).rotate_deg_around(self.center[0], self.center[1], self.angle) + ax.transData
         rect.set_transform(t)
         ax.add_patch(rect)
-        
+            
         # Add label if set
         if self.label:
             # Randomly choose to place the label inside or next to the shape
@@ -514,12 +528,23 @@ class SolidRectangle(PlotObject):
     def contains_point(self, point):
         if not self._geometry_locked:
             raise AssertionError("Geometry was not assigned and tried to access geometry.")
+        
+        # Get point and center coordinates
         x, y = point
         cx, cy = self.center
+        
+        # Convert angle to radians for rotation
         theta = math.radians(-self.angle)
+        
+        # Rotate the point around the rectangle's center to align with the rectangle's orientation
+        # This transforms our problem from "is point in rotated rectangle" to 
+        # "is rotated point in axis-aligned rectangle"
         x_rot = math.cos(theta) * (x - cx) - math.sin(theta) * (y - cy)
         y_rot = math.sin(theta) * (x - cx) + math.cos(theta) * (y - cy)
+        
+        # Check if the rotated point is inside the axis-aligned rectangle
         return (abs(x_rot) <= self.width / 2) and (abs(y_rot) <= self.height / 2)
+
     
     def get_corners(self):
         if not self._geometry_locked:
@@ -563,15 +588,15 @@ class SolidRectangle(PlotObject):
         # Compute area and perimeter using rounded values
         area = rounded_width * rounded_height
         perimeter = 2 * (rounded_width + rounded_height)
-
-        label_info = f", Label='{self.label}'" if self.label else ""
+        color = f" Color: {color_to_name(self.fill_color)}" if self.fill_color == self.border_color else f"Fill & Border Color: {color_to_name(self.fill_color)}, {color_to_name(self.border_color)}"
+        label_info = f", Label='{self.label}'," if self.label else ""
         tree = {
             "action": "GroupLine",
-            "object": f"Rectangle#{self.obj_id}" if not self.label else f"Rectangle#{self.obj_id} labeled as {self.label}",
+            "object": f"Rectangle#{self.obj_id}" if not self.label else f"Rectangle#{self.obj_id} labeled as {self.label} ",
             "details": [
                 {"action": "RecognizeInstanceRectangle", "object": f"Rectangle#{self.obj_id}"},
-                {"action": "LocalizeRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Corners: {rounded_corners[0]}, {rounded_corners[1]}, {rounded_corners[2]}, {rounded_corners[3]}) (W={rounded_width}, H={rounded_height}, Angle={rounded_angle}{label_info}, " + f"from lineIDs={line_ids})" if line_ids else ""},
-                {"action": "MeasureRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Area={area}, Perimeter={perimeter})"}
+                {"action": "LocalizeRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Corners: {rounded_corners[0]}, {rounded_corners[1]}, {rounded_corners[2]}, {rounded_corners[3]}, W={rounded_width}, H={rounded_height}, Angle={rounded_angle}, {label_info}" + f"formed from lines of IDs {line_ids})" if line_ids else ""},
+                {"action": "MeasureRectangle", "object": f"Rectangle#{self.obj_id}", "details": f" Area: {area}, Perimeter: {perimeter}, {color})"}
             ],
             "children": children_trees
         }
@@ -699,15 +724,15 @@ class SolidTriangle(PlotObject):
         (x1, y1), (x2, y2), (x3, y3) = rounded_vertices
         area = abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0
         rounded_area = round_to_nearest(area, 1)
-
+        color = f" Color: {color_to_name(self.fill_color)}" if self.fill_color == self.border_color else f"Fill & Border Color: {color_to_name(self.fill_color)}, {color_to_name(self.border_color)}"
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "GroupLine",
             "object": f"Triangle#{self.obj_id}" if not self.label else f"Triangle#{self.obj_id} labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstanceTriangle", "object": f"Triangle#{self.obj_id}"},
-                {"action": "LocalizeTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}),"  + f"from lineIDs={line_ids})" if line_ids else ""},
-                {"action": "MeasureTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Area={rounded_area})"}
+                {"action": "LocalizeTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}),"  + f"from lines with IDs = {line_ids}," if line_ids else ""},
+                {"action": "MeasureTriangle", "object": f"Triangle#{self.obj_id}", "details": f" Area: {rounded_area}, {color})"}
             ],
             "children": children_trees
         }
@@ -724,7 +749,7 @@ class SolidTriangle(PlotObject):
 # Solid Polygon
 ###############################################################################
 class SolidPolygon(PlotObject):
-    ALIAS = "SolidPolygon"
+    ALIAS = "Polygon"
 
     def __init__(self, vertices=None, border_color=None, fill_color=None, thickness=None,
                  canvas=(0, 800, 0, 600), num_vertices=5, label=None):
@@ -775,6 +800,65 @@ class SolidPolygon(PlotObject):
                 line = Line(p1=p1, p2=p2, color=self.border_color, thickness=self.thickness, canvas=self.canvas)
                 line.lock_geometry()
                 self.children.append(line)
+    def enforce_bounds(self):
+        # Check that the shape is within the canvas bounds.
+        bbox = self.get_bbox()
+        xmin, xmax, ymin, ymax = self.canvas
+        if (bbox[0] < xmin or bbox[2] > xmax or bbox[1] < ymin or bbox[3] > ymax):
+            raise ValueError(f"Shape exceeds canvas bounds: {bbox} vs canvas {self.canvas}")
+        
+        # Check that the polygon is not self-intersecting.
+        if self._is_self_intersecting(self.vertices):
+            raise ValueError("Polygon is self-intersecting.")
+
+    def _is_self_intersecting(self, vertices):
+        def on_segment(p, q, r):
+            # Return True if point q lies on segment pr.
+            if (q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and
+                q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1])):
+                return True
+            return False
+
+        def orientation(p, q, r):
+            # Determine the orientation of the triplet (p, q, r)
+            # Returns:
+            # 0 --> collinear, 1 --> clockwise, 2 --> counterclockwise
+            val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+            if val == 0:
+                return 0
+            return 1 if val > 0 else 2
+
+        def do_intersect(p1, q1, p2, q2):
+            # Check if line segments p1q1 and p2q2 intersect.
+            o1 = orientation(p1, q1, p2)
+            o2 = orientation(p1, q1, q2)
+            o3 = orientation(p2, q2, p1)
+            o4 = orientation(p2, q2, q1)
+
+            # General case.
+            if o1 != o2 and o3 != o4:
+                return True
+
+            # Special Cases:
+            if o1 == 0 and on_segment(p1, p2, q1): return True
+            if o2 == 0 and on_segment(p1, q2, q1): return True
+            if o3 == 0 and on_segment(p2, p1, q2): return True
+            if o4 == 0 and on_segment(p2, q1, q2): return True
+
+            return False
+
+        n = len(vertices)
+        # For each pair of edges (ignoring adjacent edges and the wrap-around edge sharing a vertex)
+        for i in range(n):
+            p1, q1 = vertices[i], vertices[(i + 1) % n]
+            for j in range(i + 1, n):
+                # Skip if edges share a vertex.
+                if j == i or (j + 1) % n == i or (i + 1) % n == j:
+                    continue
+                p2, q2 = vertices[j], vertices[(j + 1) % n]
+                if do_intersect(p1, q1, p2, q2):
+                    return True
+        return False
 
     def render(self, ax):
         if not self._geometry_locked:
@@ -863,16 +947,16 @@ class SolidPolygon(PlotObject):
                 area += x1 * y2 - x2 * y1
             return abs(area) / 2
 
-        area = shoelace_area(self.vertices)
-
+        area = round_to_nearest(shoelace_area(self.vertices), 1)
+        color = f" Color: {color_to_name(self.fill_color)}" if self.fill_color == self.border_color else f"Fill & Border Color: {color_to_name(self.fill_color)}, {color_to_name(self.border_color)}"
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "GroupLine",
             "object": f"Polygon#{self.obj_id}" if not self.label else f"Polygon#{self.obj_id} labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstancePolygon", "object": f"Polygon#{self.obj_id}"},
-                {"action": "LocalizePolygon", "object": f"Polygon#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}), " + f"from lineIDs={line_ids})" if line_ids else ""},
-                {"action": "MeasurePolygonArea", "object": f"Polygon#{self.obj_id}", "details": f" Area: {area})"}
+                {"action": "LocalizePolygon", "object": f"Polygon#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}, " + f"from lines with IDs ={line_ids}," if line_ids else ""},
+                {"action": "MeasurePolygonArea", "object": f"Polygon#{self.obj_id}", "details": f" Area: {area}, {color})"}
             ],
             "children": children_trees
         }
@@ -1052,7 +1136,7 @@ class CompositeShapeGenerator:
             def __init__(self, center=None, scale=1.0, angle=0, canvas=(0, 800, 0, 600), label=None):
                 super().__init__()
                 self.canvas = canvas
-                self.center = center if center else ((canvas[0] + canvas[1]) / 2, (canvas[2] + canvas[3]) / 2)
+                self.center = center
                 self.scale = scale
                 self.angle = angle
                 self.label = label
@@ -1064,6 +1148,7 @@ class CompositeShapeGenerator:
                 self.doodle_blueprints = generator.doodle_blueprints
                 self.components = []
                 self._geometry_locked = False
+                self.assign_geometry()
             
             def _instantiate_components(self):
                 self.components = []
@@ -1259,18 +1344,11 @@ class CompositeShapeGenerator:
 
                 # Compute approximate area as sum of component areas.
                 area = 0
-                for component in self.components:
-                    if hasattr(component, 'width') and hasattr(component, 'height'):
-                        area += component.width * component.height
-                    elif hasattr(component, 'vertices'):
-                        vertices = component.vertices
-                        n = len(vertices)
-                        a = 0
-                        for i in range(n):
-                            j = (i + 1) % n
-                            a += vertices[i][0] * vertices[j][1]
-                            a -= vertices[j][0] * vertices[i][1]
-                        area += abs(a) / 2
+                bbox = self.get_bbox()
+                x_min, y_min, x_max, y_max = bbox
+                width = x_max - x_min
+                height = y_max - y_min
+                area = width * height
 
                 # Round key skill fields
                 rounded_center = (round_to_nearest(self.center[0], 1), round_to_nearest(self.center[1], 1))
@@ -1281,8 +1359,7 @@ class CompositeShapeGenerator:
                 label_info = f", Label='{self.label}'" if self.label else ""
 
                 # Create a standardized component list string: each entry is "Type#ID"
-                component_list = ", ".join(f"{component.ALIAS}#{component.obj_id}" for component in self.components) + "" if not self.doodle_blueprints else " and a curved drawn doodle"
-
+                component_list = ", ".join(f"{component.ALIAS}#{component.obj_id}" for component in self.components) + ("" if not self.doodle_blueprints else (" and a drawn doodle or shape" if len(self.doodle_blueprints) == 1 else " and drawn doodles or shapes")) if self.components or self.doodle_blueprints else ("a drawn doodle or shape" if self.doodle_blueprints and len(self.doodle_blueprints) == 1 else ("drawn doodles or shapes" if self.doodle_blueprints else ""))
                 tree = {
                     "action": "RecognizeCompositeShape",
                     "object": f"{self.ALIAS}#{self.obj_id}" if not self.label else f"{self.ALIAS}#{self.obj_id} labeled as {self.label}",
@@ -1290,17 +1367,17 @@ class CompositeShapeGenerator:
                         {
                             "action": "LocalizeCompositeShape",
                             "object": f"{self.ALIAS}#{self.obj_id}",
-                            "details": f"Center: {rounded_center}, Scale: {rounded_scale}, Angle: {rounded_angle}{label_info}"
+                            "details": f"( Center: {rounded_center}, Scale: {rounded_scale}, Angle: {rounded_angle}{label_info}, "
                         },
                         {
                             "action": "ListComponents",
                             "object": f"{self.ALIAS}#{self.obj_id}",
-                            "details": f"Component list: {component_list}"
+                            "details": f" Component list: {component_list},"
                         },
                         {
                             "action": "MeasureCompositeShape",
                             "object": f"{self.ALIAS}#{self.obj_id}",
-                            "details": f"Approximate Area (including white-space between parts of it): {rounded_area}"
+                            "details": f" Approximate Area (including white-space between its parts): {rounded_area})"
                         }
                     ],
                     "children": children_trees
