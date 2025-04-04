@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Rectangle, Polygon
 import matplotlib.colors as mcolors
 import numpy as np
-
+from base import UniqueIDGenerator
 from base import PlotObject
 from utilities import get_line_length_and_angle, rotate_point, color_to_name
 
@@ -280,17 +280,21 @@ class SolidOval(PlotObject):
         self.canvas = canvas
         self.fill_color = fill_color if fill_color is not None else random_fill_color()
         self.border_color = border_color if border_color is not None else random_border_color(self.fill_color)
-        
         self.thickness = thickness if thickness is not None else random_thickness()
         self.center = center
         self.width = width
         self.height = height
         self.angle = angle
-        self.children=None
-        self.is_circle = is_circle  # if True, force width==height.
+        self.children = None
+        self.is_circle = is_circle
+        # Reassign unique id using the specific alias.
+        self.obj_id = UniqueIDGenerator.get_unique_id(self.get_alias())
         self.label = label
         self._geometry_locked = (center is not None and width is not None and height is not None and angle is not None)
 
+    def get_alias(self):
+        """Return 'Circle' if is_circle is True, else 'Oval'."""
+        return "Circle" if self.is_circle else "Oval"
     def assign_geometry(self):
         if not self._geometry_locked:
             xmin, xmax, ymin, ymax = self.canvas
@@ -380,10 +384,10 @@ class SolidOval(PlotObject):
         label_info = f", Label='{self.label}'" if self.label else ""
         tree = {
             "action": "RecognizeInstanceOval",
-            "object": f"Oval#{self.obj_id}" if not self.label else f"Oval#{self.obj_id} labeled as {self.label}",
+            "object": f"{self.get_alias()}#{self.obj_id}" if not self.label else f"{self.get_alias()}#{self.obj_id} labeled as {self.label}",
             "details": [
-                {"action": "LocalizeOval", "object": f"SolidOval#{self.obj_id}", "details": f"(Center: {center_rounded}, W={width_rounded}, H={height_rounded}, Angle={angle_rounded}{label_info}, "},
-                {"action": "MeasureOval", "object": f"SolidOval#{self.obj_id}", "details": f" Area: {area_rounded}, {color})"}
+                {"action": "LocalizeOval", "object": f"{self.get_alias()}#{self.obj_id}", "details": f"(Center: {center_rounded}, W={width_rounded}, H={height_rounded}, Angle={angle_rounded}{label_info}, "},
+                {"action": "MeasureOval", "object": f"{self.get_alias()}#{self.obj_id}", "details": f" Area: {area_rounded}, {color})"}
             ]
         }
         
@@ -392,20 +396,22 @@ class SolidOval(PlotObject):
                 print(line)
         
         return tree
+
+
 ###############################################################################
 # Solid Rectangle / Square
 ###############################################################################
 class SolidRectangle(PlotObject):
-    ALIAS = "Rectangle"
+    ALIAS = "Rectangle"  # used as a fallback for general geometry
 
     def __init__(self, center=None, width=None, height=None, angle=None,
                  border_color=None, fill_color=None, thickness=None,
                  canvas=(0, 800, 0, 600), is_square=False, label=None):
         super().__init__()
+
         self.canvas = canvas
         self.fill_color = fill_color if fill_color is not None else random_fill_color()
         self.border_color = border_color if border_color is not None else random_border_color(self.fill_color)
-        
         self.thickness = thickness if thickness is not None else random_thickness()
         self.center = center
         self.width = width
@@ -413,8 +419,13 @@ class SolidRectangle(PlotObject):
         self.angle = angle
         self.is_square = is_square
         self.label = label
+        # Reassign the unique id based on the specific alias rather than the static ALIAS.
+        self.obj_id = UniqueIDGenerator.get_unique_id(self.get_alias())
         if (center is not None and width is not None and height is not None and angle is not None):
             self.lock_geometry()
+    def get_alias(self):
+        """Return 'Square' if this is a square, else 'Rectangle'."""
+        return "Square" if self.is_square or (self.width is not None and self.height is not None and self.width == self.height) else "Rectangle"
     def assign_geometry(self):
         if not self._geometry_locked:
             xmin, xmax, ymin, ymax = self.canvas
@@ -447,7 +458,7 @@ class SolidRectangle(PlotObject):
                 cy = random.uniform(ymin + bbox_h / 2, ymax - bbox_h / 2)
                 self.center = (cx, cy)
         if self.is_square or self.width == self.height:
-            self.mask_alias = SQUARE
+            self.mask_alias = "Square"
         self.enforce_bounds()
         self.lock_geometry()
     def create_children(self):
@@ -593,14 +604,15 @@ class SolidRectangle(PlotObject):
         label_info = f", Label='{self.label}'," if self.label else ""
         tree = {
             "action": "GroupLine",
-            "object": f"{self.get_alias()}#{self.obj_id}" if not self.label else f"{self.get_alias()}#{self.obj_id} labeled as {self.label} ",
+            "object": f"{self.get_alias()}#{self.obj_id}" if not self.label else f"{self.get_alias()}#{self.obj_id} labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstanceRectangle", "object": f"{self.get_alias()}#{self.obj_id}"},
-                {"action": "LocalizeRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Corners: {rounded_corners[0]}, {rounded_corners[1]}, {rounded_corners[2]}, {rounded_corners[3]}, W={rounded_width}, H={rounded_height}, Angle={rounded_angle}, {label_info}" + f"formed from lines of IDs {line_ids})" if line_ids else ""},
-                {"action": "MeasureRectangle", "object": f"Rectangle#{self.obj_id}", "details": f" Area: {area}, Perimeter: {perimeter}, {color})"}
+                {"action": "LocalizeRectangle", "object": f"{self.get_alias()}#{self.obj_id}", "details": f"(Corners: {rounded_corners[0]}, {rounded_corners[1]}, {rounded_corners[2]}, {rounded_corners[3]}, W={rounded_width}, H={rounded_height}, Angle={rounded_angle}, {label_info}" + f" formed from lines of IDs {line_ids})" if line_ids else ""},
+                {"action": "MeasureRectangle", "object": f"{self.get_alias()}#{self.obj_id}", "details": f" Area: {area}, Perimeter: {perimeter}, {color})"}
             ],
             "children": children_trees
         }
+
 
         if verbose:
             for line in self.skills_tree_to_text(tree):

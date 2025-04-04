@@ -96,10 +96,12 @@ class SceneGenerator:
             params["thickness"] = random.uniform(1, 4)
             params["is_circle"] = is_circle or abs(params["width"] - params["height"]) < (2 * self.scale)
         elif shape_type == "SolidRectangle":
+            is_square = True if random.random() < 0.2 else False
             params["center"] = (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
             params["width"] = random.uniform(10, int(self.canvas_width / 2.5))
-            params["height"] = random.uniform(10, int(self.canvas_height / 2.5))
+            params["height"] = random.uniform(10, int(self.canvas_height / 2.5)) if not is_square else params["width"]
             params["thickness"] = random.uniform(1, 3)
+            params["is_square"] = is_square or (params["height"] == params["width"])
         elif shape_type == "SolidTriangle":
             params["vertices"] = [
                 (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
@@ -198,7 +200,7 @@ class SceneGenerator:
             # With ~15% probability, set a random label on the shape if available.
             if random.random() < 0.15:
                 shape.set_label()
-        except Exception:
+        except Exception as e:
             UniqueIDGenerator.load_checkpoint()
             return None
         

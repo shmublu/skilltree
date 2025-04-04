@@ -92,13 +92,21 @@ class PlotObject:
         try:
             fill_color = getattr(self, 'fill_color', None)
             border_color = getattr(self, 'border_color', None)
+            if fill_color == border_color or fill_color ==mcolors.to_rgba("white", 0.0):
+                return color_to_name(color_to_name(border_color))
             return color_to_name(fill_color) + " and " + color_to_name(border_color)
         except:
             return None
+    def get_identifier(self):
+        return f"{self.get_alias()}#{self.obj_id}"
     def get_label(self):
         return self.label
     def get_alias(self):
-        return self.ALIAS
+        mask_alias = getattr(self, 'mask_alias', None)
+        if mask_alias:
+            return mask_alias
+        else:
+            return self.ALIAS
     def get_area(self):
         if hasattr(self, 'p1') or hasattr(self, 'p2') or getattr(self, 'is_composite', False):
             return 0
@@ -136,15 +144,15 @@ class PlotObject:
         import random
         import string
 
-        choice = random.random()
         if random.random() < .25:
             clist = self.get_children()
-            for c in clist:
-                if random.random() < .25:
-                    c.set_label()
-            return
+            if clist:
+                for c in clist:
+                    if random.random() < .25:
+                        c.set_label()
+                return
             
-
+        choice = random.random()
         if choice < 1/3:
             # Random string with first letter capitalized
             length = random.randint(3, 10)
