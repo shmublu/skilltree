@@ -446,7 +446,8 @@ class SolidRectangle(PlotObject):
                 cx = random.uniform(xmin + bbox_w / 2, xmax - bbox_w / 2)
                 cy = random.uniform(ymin + bbox_h / 2, ymax - bbox_h / 2)
                 self.center = (cx, cy)
-
+        if self.is_square or self.width == self.height:
+            self.mask_alias = SQUARE
         self.enforce_bounds()
         self.lock_geometry()
     def create_children(self):
@@ -592,9 +593,9 @@ class SolidRectangle(PlotObject):
         label_info = f", Label='{self.label}'," if self.label else ""
         tree = {
             "action": "GroupLine",
-            "object": f"Rectangle#{self.obj_id}" if not self.label else f"Rectangle#{self.obj_id} labeled as {self.label} ",
+            "object": f"{self.get_alias()}#{self.obj_id}" if not self.label else f"{self.get_alias()}#{self.obj_id} labeled as {self.label} ",
             "details": [
-                {"action": "RecognizeInstanceRectangle", "object": f"Rectangle#{self.obj_id}"},
+                {"action": "RecognizeInstanceRectangle", "object": f"{self.get_alias()}#{self.obj_id}"},
                 {"action": "LocalizeRectangle", "object": f"Rectangle#{self.obj_id}", "details": f"(Corners: {rounded_corners[0]}, {rounded_corners[1]}, {rounded_corners[2]}, {rounded_corners[3]}, W={rounded_width}, H={rounded_height}, Angle={rounded_angle}, {label_info}" + f"formed from lines of IDs {line_ids})" if line_ids else ""},
                 {"action": "MeasureRectangle", "object": f"Rectangle#{self.obj_id}", "details": f" Area: {area}, Perimeter: {perimeter}, {color})"}
             ],

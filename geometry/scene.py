@@ -245,13 +245,14 @@ class SceneGenerator:
         
 
     def get_shapes_by_type(self) -> Dict[str, List[Any]]:
-        """Return a dictionary mapping shape types to lists of shapes (including children recursively)."""
+        """Return a dictionary mapping shape types (including hierarchical aliases) to lists of shapes (including children recursively)."""
         result: Dict[str, List[Any]] = {}
         def add_shape_and_children(shape: Any) -> None:
-            shape_type: str = shape.ALIAS
-            if shape_type not in result:
-                result[shape_type] = []
-            result[shape_type].append(shape)
+            # Get the hierarchical aliases for the shape.
+            for alias in self.get_hierarchical_aliases(shape):
+                if alias not in result:
+                    result[alias] = []
+                result[alias].append(shape)
             children = shape.get_children()
             if children:
                 for child in children:
@@ -259,13 +260,49 @@ class SceneGenerator:
         for shape in self.shapes:
             add_shape_and_children(shape)
         return result
-    
+
+    def get_hierarchical_aliases(self, shape: Any) -> List[str]:
+        """
+        Returns a list of aliases for the shape.
+        Uses shape.get_alias() (the specific type, e.g. "Square") and shape.ALIAS (the main type, e.g. "Rectangle").
+        If they differ, both are returned so that questions can be generated properly.
+        """
+        specific = shape.get_alias()   # e.g. "Square" or "Circle"
+        main = shape.ALIAS             # e.g. "Rectangle" for a square, "Oval" for a circle
+        aliases = [specific]
+        if specific.lower() != main.lower():
+            aliases.append(main)
+        return aliases
+    def is_ancestor(self, ancestor: Any, descendant: Any) -> bool:
+        """
+        Recursively checks if 'ancestor' is an ancestor (or parent) of 'descendant'.
+        This is done by checking the children (via get_children()).
+        """
+        children = ancestor.get_children()
+        if not children:
+            return False
+        for child in children:
+            if child.get_identifier() == descendant.get_identifier():
+                return True
+            if self.is_ancestor(child, descendant):
+                return True
+        return False
+
+    def is_related(self, shape1: Any, shape2: Any) -> bool:
+        """
+        Returns True if shape1 is an ancestor/descendant of shape2.
+        This helps avoid counting intersections between a shape and its own components.
+        """
+        return self.is_ancestor(shape1, shape2) or self.is_ancestor(shape2, shape1)
+
+        
     
     def get_total_number_of_shapes(self) -> int:
-        """Return the total number of shapes (including children recursively)."""
-        shapes_by_type = self.get_shapes_by_type()
-        total_shapes = sum(len(shapes) for shapes in shapes_by_type.values())
-        return total_shapes
+        """Return the total number of unique shapes (including children recursively)."""
+        unique_shapes = set()
+        for shape in self.get_flattened_shapes():
+            unique_shapes.add(shape.get_identifier())  # assuming each shape has a unique identifier
+        return len(unique_shapes)
 
     def count_shapes_by_type(self) -> Dict[str, int]:
         """Return a dictionary mapping shape types to counts."""
@@ -492,80 +529,103 @@ class SceneGenerator:
         fig.savefig(image_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         return json_entry
-
-    def generate_question_and_answer(self) -> Tuple[str, str]:
+    def generate_question_and_answer(self) -> Tuple[str, str, List[str]]:
         """
         Generate a random question and its answer based on the current scene.
         No retries are done; the question is computed from the scene as is.
+        Returns a tuple of (question_text, answer, list_of_shape_identifiers)
         """
         question_types = ["existence", "intersection", "intersection_count", 
-                          "position", "count", "multiple_count", "most_common", "area_comparison"]
+                        "position", "count", "multiple_count", "most_common", "area_comparison"]
         chosen = random.choice(question_types)
+        shapes_by_type = self.get_shapes_by_type()
+        shapes_involved: List[str] = []
+
         if chosen == "existence":
-            valid = [s for s in self.shape_classes.keys() if s != "Line"]
-            target = random.choice(valid)
-            shapes_by_type = self.get_shapes_by_type()
-            while (target not in shapes_by_type ) and not (random.random() < 0.25):
+            # Use natural shape names instead of internal keys.
+            valid = ["Circle", "Oval", "Square", "Rectangle", "Triangle", "Polygon"]
+            # 90% chance to pick an object type already in the scene if possible.
+            if random.random() < 0.9 and shapes_by_type:
+                target = random.choice(list(shapes_by_type.keys()))
+            else:
                 target = random.choice(valid)
             if target in shapes_by_type and len(shapes_by_type[target]) > 0:
-                s = self.describe_object(random.choice(shapes_by_type[target]))
+                shape_obj = random.choice(shapes_by_type[target])
+                shapes_involved = [shape_obj.get_identifier()]
+                s = self.describe_object(shape_obj)
                 answer = f"there is a {s} present. Therefore, yes"
             else:
                 answer = "no"
-            question_text = f"Is there a {target.replace('Solid','')} in this image?"
-            return question_text, answer
+                shapes_involved = []
+            question_text = f"Is there a {target} in this image?"
+            return question_text, answer, shapes_involved
+
+
         elif chosen == "intersection":
-            shape_types = list(self.shape_classes.keys())
-            shape1 = random.choice(shape_types)
-            shape2 = random.choice(shape_types)
-            shapes_by_type = self.get_shapes_by_type()
-            while (shape1 not in shapes_by_type and shape2 not in shapes_by_type ) and not( random.random() < 0.2): 
-                shape2 = random.choice(shape_types)
+            # 90% chance to use objects from the scene if at least two different types exist.
+            if random.random() < 0.9 and len(list(shapes_by_type.keys())) >= 2:
+                shape1 = random.choice(list(shapes_by_type.keys()))
+                shape2 = random.choice([st for st in list(shapes_by_type.keys()) if st != shape1])
+            else:
+                shape_types = list(self.shape_classes.keys())
                 shape1 = random.choice(shape_types)
+                shape2 = random.choice(shape_types)
             exists = False
             shape_int1 = None
             shape_int2 = None
             if shape1 in shapes_by_type and shape2 in shapes_by_type:
                 for s1 in shapes_by_type[shape1]:
                     for s2 in shapes_by_type[shape2]:
+                        # Skip if one shape is an ancestor or descendant of the other.
+                        if self.is_related(s1, s2):
+                            continue
                         if self.shapes_intersect(s1, s2):
                             exists = True
                             shape_int1 = s1
                             shape_int2 = s2
                             break
+                    if exists:
+                        break
             if exists:
                 answer = f"that I see a {self.describe_object(shape_int1)} and a {self.describe_object(shape_int2)} intersecting with each other. So, my final answer is yes"
+                shapes_involved = [shape_int1.get_identifier(), shape_int2.get_identifier()]
             else:
                 answer = f"there is no such {replace_polygon(shape1.replace('Solid', ''))} overlapping with a {replace_polygon(shape2.replace('Solid', ''))} in this image. So, no"
+                shapes_involved = []
             question_text = f"Does a {replace_polygon(shape1.replace('Solid',''))} intersect with a {replace_polygon(shape2.replace('Solid',''))} in this image?"
-            return question_text, answer
-        elif chosen == "intersection_count":
-            shape_types = list(self.shape_classes.keys())
-            shapes_by_type = self.get_shapes_by_type()
-            shape1 = random.choice(shape_types)
-            shape2 = random.choice(shape_types)
-            while (shape1 not in shapes_by_type and shape2 not in shapes_by_type ) and not( random.random() < 0.05):
-                shape1 = random.choice(shape_types)
-                shape2 = random.choice(shape_types)
+            return question_text, answer, shapes_involved
 
-            count = 0
-            visited = set()
+
+        elif chosen == "intersection_count":
+            if random.random() < 0.9 and len(list(shapes_by_type.keys())) >= 2:
+                shape1 = random.choice(list(shapes_by_type.keys()))
+                shape2 = random.choice([st for st in list(shapes_by_type.keys()) if st != shape1])
+            else:
+                valid = ["Circle", "Oval", "Square", "Rectangle", "Triangle", "Polygon"]
+                shape1 = random.choice(valid)
+                shape2 = random.choice(valid)
+            intersection_pairs = set()  # use frozenset to deduplicate pairs
             if shape1 in shapes_by_type and shape2 in shapes_by_type:
                 for s1 in shapes_by_type[shape1]:
-                    visited.add(s1)
                     for s2 in shapes_by_type[shape2]:
-                        if s2 in visited:
+                        # Avoid comparing a shape with itself and skip if one is an ancestor of the other.
+                        if s1.get_identifier() == s2.get_identifier() or self.is_related(s1, s2):
                             continue
                         if self.shapes_intersect(s1, s2):
-                            count += 1
-            question_text = f"How many {replace_polygon(shape1.replace('Solid',''))}s intersect with {replace_polygon(shape2.replace('Solid',''))}s in this image?"
-            return question_text, str(count)
+                            pair = frozenset({s1.get_identifier(), s2.get_identifier()})
+                            intersection_pairs.add(pair)
+            count = len(intersection_pairs)
+            question_text = f"How many {shape1}s intersect with {shape2}s in this image?"
+            shapes_involved = []  # Optionally, you could list some of the identifiers from the pairs.
+            return question_text, str(count), shapes_involved
+
+
         elif chosen == "position":
             valid = [s for s in self.shape_classes.keys() if s != "Line"]
-            shape1 = random.choice(valid)
-            shape2 = random.choice(valid)
-            shapes_by_type = self.get_shapes_by_type()
-            while (shape1 in shapes_by_type and shape2 in shapes_by_type) or random.random() < 0.05:
+            if random.random() < 0.9 and len(list(shapes_by_type.keys())) >= 2:
+                shape1 = random.choice(list(shapes_by_type.keys()))
+                shape2 = random.choice([st for st in list(shapes_by_type.keys()) if st != shape1])
+            else:
                 shape1 = random.choice(valid)
                 shape2 = random.choice(valid)
             relation = random.choice(["above", "below", "left of", "right of"])
@@ -579,60 +639,90 @@ class SceneGenerator:
                         bbox1 = s1.get_bbox()
                         bbox2 = s2.get_bbox()
                         if (relation == "above" and bbox1[1] > bbox2[3]) or \
-                           (relation == "below" and bbox1[3] < bbox2[1]) or \
-                           (relation == "left of" and bbox1[2] < bbox2[0]) or \
-                           (relation == "right of" and bbox1[0] > bbox2[2]):
+                        (relation == "below" and bbox1[3] < bbox2[1]) or \
+                        (relation == "left of" and bbox1[2] < bbox2[0]) or \
+                        (relation == "right of" and bbox1[0] > bbox2[2]):
                             exists = True
                             shape_int1 = s1
                             shape_int2 = s2
                             break
-            answer = "Yes" if exists else "No"
+                    if exists:
+                        break
             if exists:
                 answer = f",because a {self.describe_object(shape_int1)} is entirely {relation} a {self.describe_object(shape_int2)}, yes"
+                shapes_involved = [shape_int1.get_identifier(), shape_int2.get_identifier()]
             else:
                 answer = f"there is no {shape1.replace('Solid', '')} entirely {relation} a {shape2.replace('Solid', '')} in the image provided, so no"
+                shapes_involved = []
             question_text = f"Is there a {replace_polygon(shape1.replace('Solid',''))} entirely {relation} a {replace_polygon(shape2.replace('Solid',''))} in this image?"
-            return question_text, answer
+            return question_text, answer, shapes_involved
+
         elif chosen == "count":
-            valid = [s for s in self.shape_classes.keys() if s != "Line"]
-            target = random.choice(valid)
-            shapes_by_type = self.get_shapes_by_type()
-            while (target not in shapes_by_type) and not( random.random() < 0.1):
+            valid = ["Circle", "Oval", "Square", "Rectangle", "Triangle", "Polygon"]
+            if random.random() < 0.9 and shapes_by_type:
+                target = random.choice(list(shapes_by_type.keys()))
+            else:
                 target = random.choice(valid)
             count = len(shapes_by_type.get(target, []))
-            question_text = f"How many {replace_polygon(target.replace('Solid',''))}s are there in this image?"
-            return question_text, str(count)
+            if target in shapes_by_type and shapes_by_type[target]:
+                shape_obj = random.choice(shapes_by_type[target])
+                shapes_involved = [shape_obj.get_identifier()]
+            else:
+                shapes_involved = []
+            question_text = f"How many {target}s are there in this image?"
+            return question_text, str(count), shapes_involved
+
+
         elif chosen == "multiple_count":
-            valid = [s for s in self.shape_classes.keys() if s != "Line"]
-            shape1 = random.choice(valid)
-            valid.remove(shape1)
-            shape1 = replace_polygon(shape1)
-            shape2 = replace_polygon(random.choice(valid))
+            valid = ["Circle", "Oval", "Square", "Rectangle", "Triangle", "Polygon"]
+            if random.random() < 0.9 and len(list(shapes_by_type.keys())) >= 2:
+                shape1 = random.choice(list(shapes_by_type.keys()))
+                shape2 = random.choice([st for st in list(shapes_by_type.keys()) if st != shape1])
+            else:
+                shape1 = random.choice(valid)
+                shape2 = random.choice([s for s in valid if s != shape1])
+            # Compute the union of shapes (by unique identifier) to avoid double counting.
+            union_ids = set()
+            if shape1 in shapes_by_type:
+                union_ids.update(s.get_identifier() for s in shapes_by_type[shape1])
+            if shape2 in shapes_by_type:
+                union_ids.update(s.get_identifier() for s in shapes_by_type[shape2])
+            count = len(union_ids)
             
-            shapes_by_type = self.get_shapes_by_type()
-            count = len(shapes_by_type.get(shape1, [])) + len(shapes_by_type.get(shape2, []))
-            question_text = f"How many {replace_polygon(shape1.replace('Solid',''))}s and {replace_polygon(shape2.replace('Solid',''))}s are there in this image?"
-            return question_text, str(count)
+            # For shapes_involved, we can include one representative from each category.
+            involved = []
+            if shape1 in shapes_by_type:
+                involved.append(random.choice(shapes_by_type[shape1]).get_identifier())
+            if shape2 in shapes_by_type:
+                involved.append(random.choice(shapes_by_type[shape2]).get_identifier())
+            question_text = f"How many {shape1}s and {shape2}s are there in this image?"
+            return question_text, str(count), involved
+
+
         elif chosen == "most_common":
-            shapes_by_type = self.get_shapes_by_type()
             counts = {k: len(v) for k, v in shapes_by_type.items()}
             if not counts:
                 answer = "N/A"
                 question_text = "Which shape appears the most times in this picture?"
+                shapes_involved = []
             else:
                 max_count_val = max(counts.values())
                 most_common = [k for k, v in counts.items() if v == max_count_val]
                 answer = ", ".join([replace_polygon(mc.replace('Solid','')) for mc in most_common])
+                # choose one representative object if possible
+                if most_common and shapes_by_type.get(most_common[0]):
+                    shapes_involved = [random.choice(shapes_by_type[most_common[0]]).get_identifier()]
+                else:
+                    shapes_involved = []
                 question_text = "Which shape appears the most times in this image?"
-            return question_text, answer
+            return question_text, answer, shapes_involved
+
         elif chosen == "area_comparison":
-            shape_types = list(self.shape_classes.keys())
+            shapes = self.get_flattened_shapes()
             highest_shape = None
             highest_area = -math.inf
             lowest_area = math.inf
             lowest_shape = None
-            best = None
-            shapes = self.get_flattened_shapes()
             for shape in shapes:
                 try:
                     area = shape.get_area()
@@ -646,14 +736,20 @@ class SceneGenerator:
                     continue
             relation = random.choice(["highest", "lowest"])
             if relation == "highest":
-                best = shape
+                best = highest_shape
             else:
-                best = shape
+                best = lowest_shape
             question_text = f"Which shape-type has the shape with the {relation} area in this image?"
             if best:
                 answer = f"the {self.describe_object(best)} has the {relation} area, so {replace_polygon(best.get_alias())}"
-            answer = self.describe_object(best) if  best else "there are no shapes with non-undefined area in the scene"
-            return question_text, answer
+                shapes_involved = [best.get_identifier()]
+            else:
+                answer = "there are no shapes with non-undefined area in the scene"
+                shapes_involved = []
+            return question_text, answer, shapes_involved
+
+    
+    
     def describe_object(self, shape):
         shape_name = replace_polygon(shape.get_alias())
         color = shape.get_color()
@@ -673,7 +769,7 @@ def generate_dataset(output_file: str="scene_dataset7.json", num_examples: int=5
     with open(output_file, 'w') as f_out:
         for _ in range(num_examples):
             generator.generate_random_scene()
-            question, answer = generator.generate_question_and_answer()
+            question, answer, shapes = generator.generate_question_and_answer()
             temp_file = f"temp_scene_{uuid.uuid4().hex}.json"
             try:
                 json_entry = generator.save_to_json(temp_file, question, answer, output_image_path)
@@ -693,7 +789,7 @@ if __name__ == "__main__":
     
     # Generate a random scene (no retries) and then generate a random question & answer from it.
     generator.generate_random_scene()
-    question, answer = generator.generate_question_and_answer()
+    question, answer, shapes = generator.generate_question_and_answer()
     print(f"Question: {question}")
     print(f"Answer: {answer}")
     
@@ -703,4 +799,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("Rendering failed:", e)
     
-    generate_dataset(num_examples=300, output_image_path="/n/fs/penciller/skilltree2/geometry/output-tests")
+    generate_dataset(num_examples=305, output_image_path="/n/fs/penciller/skilltree2/geometry/output-tests")
