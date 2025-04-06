@@ -548,45 +548,69 @@ class SceneGenerator:
 
     
     
-    def save_to_json(self, filename: str, question: str, answer: str, path: str, alpaca_output: bool = False) -> Dict[str, Any]:
+    def save_to_json(self, filename: str, question: str, answer: str, path: str, old_output: bool = False) -> dict:
         """
-        Save the scene, question, and answer to a JSON file in single-line JSON format.
-        Also, save the image immediately.
-        
-        If alpaca_output is True, use a different assistant output format.
+        Append a single example to a JSONL-style file, where each line is a JSON object
+        followed by a comma. Assumes caller will wrap with [ ] if needed.
         """
-        scene_id = str(uuid.uuid4().hex)
-        image_path = f"{path}/scene_{scene_id}.png"
+
+        # Generate a unique image path
+        scene_id = uuid.uuid4().hex
+        image_path = os.path.join(path, f"scene_{scene_id}.png")
+
+        # Validate the scene
         if not self.all_shapes_valid():
             raise ValueError("Final scene contains shapes out of bounds.")
+        
+        # Generate trace and assistant response
         skill_trace = self.get_skill_trace()
-        if alpaca_output:
-            # Example Alpaca-style output formatting.
-            assistant_response = (
-                f"Question: {question}\n"
-                f"Answer: {answer}\n"
-                f"Skill Trace:\n{skill_trace}"
-            )
+        assistant_response = (
+            f"The scene contains 2D shapes or geometry. Before I answer, let me parse them: {skill_trace}\n"
+            f"I will now use that information and return to the original question: '{question}' - the answer is {answer}."
+        )
+
+        # Build JSON structure
+        if old_output:
+            json_entry = {
+                "messages": [
+                    {"role": "user", "content": question},
+                    {"role": "assistant", "content": assistant_response}
+                ],
+                "images": [image_path]
+            }
         else:
-            assistant_response = (
-                f"The scene contains 2D shapes or geometry. Before I answer, let me parse them: {skill_trace}\n"
-                f"I will now use that information and return to the original question: '{question}' - the answer is {answer}."
-            )
-        json_entry = {
-            "messages": [
-                {"role": "user", "content": question},
-                {"role": "assistant", "content": assistant_response}
-            ],
-            "images": [image_path]
-        }
-        with open(filename, 'w') as f:
-            json.dump(json_entry, f, separators=(',',':'))
+            json_entry = {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": "You are a helpful assistant."}]
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "path": image_path},
+                            {"type": "text", "text": question}
+                        ]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": assistant_response}]
+                    }
+                ]
+            }
+
+        # Ensure directory exists and save image
         os.makedirs(os.path.dirname(image_path), exist_ok=True)
         fig, ax = self.render()
         fig.savefig(image_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
-        return json_entry
 
+        # Append the JSON entry + comma to file
+        with open(filename, 'a') as f:
+            json.dump(json_entry, f, indent=2)
+            f.write(',\n')  # always add comma + newline
+
+        return json_entry
     
     
     def generate_question_and_answer(self) -> Tuple[str, str, List[str]]:
@@ -841,7 +865,7 @@ def generate_dataset(output_file: str="scene_dataset7.json", num_examples: int=5
                 os.remove(temp_file)
             json_line = json.dumps(json_entry, separators=(',',':'))
             print(json_line)
-            f_out.write(json_line + "\n")
+            f_out.write(json_line + ",\n")
     
     print(f"Generated {num_examples} examples and saved to {output_file}")
     print("Failure counts per question type:", generator.fail_counts)
@@ -855,4 +879,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("Rendering failed:", e)
     
-    generate_dataset(num_examples=1, output_image_path="/n/fs/penciller/skilltree2/geometry/output-tests")
+    generate_dataset(num_examples=3, output_image_path="/n/fs/penciller/skilltree2/geometry/output-tests")
