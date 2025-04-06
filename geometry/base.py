@@ -54,6 +54,7 @@ class PlotObject:
         self.has_border = False        # Shapes (except lines) can have borders.
         self.border_color = "black"    # Color for border.
         self.fill_color = "none"       # Fill color (default is transparent).
+        self.children = None
         
         # Note: Coordinates/geometry attributes will be defined in subclasses.
     def __str__(self):
@@ -140,7 +141,10 @@ class PlotObject:
             child.render(ax)  
     def __repr__(self):
         return f"{self.ALIAS}#{self.obj_id}"
-    def set_label(self):
+    def set_label(self, label = None):
+        if label:
+            self.label = label
+            return
         import random
         import string
 

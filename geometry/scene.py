@@ -11,6 +11,7 @@ from shapes import Line, SolidOval, SolidRectangle, SolidTriangle, SolidPolygon
 from shapes import CompositeShapeGenerator  # New composite shape generator
 from base import UniqueIDGenerator
 from utilities import replace_polygon
+from shapes import scale_shape
 
 class SceneGenerator:
     """Class for generating scenes of geometric shapes based on different constraints and question types."""
@@ -21,7 +22,7 @@ class SceneGenerator:
         We expand the base canvas size by a random factor between 1.1 and 1.2
         to allow extra room and reduce boundary failures.
         """
-        
+        UniqueIDGenerator.reset_counters()
         self.base_canvas = (random.randint(300, 800), random.randint(300, 800)) if not base_canvas else base_canvas
         base_width, base_height = self.base_canvas
         expansion = 1
@@ -30,8 +31,10 @@ class SceneGenerator:
         self.canvas_height = int(base_height * expansion)
         self.canvas = (0, self.canvas_width, 0, self.canvas_height)
         # Increase number of shapes to generate a richer scene.
-        self.global_max_shapes: int = random.randint(3, 15)
+        self.global_max_shapes: int = random.randint(3, 25)
         self.max_attempts: int = max_attempts
+        self.scale_line_present: bool = False
+        self.scale_factor: float = 1.0
         self.shapes: List[Any] = []
         self.shape_classes: Dict[str, Any] = {
             "Line": Line,
@@ -39,6 +42,13 @@ class SceneGenerator:
             "SolidRectangle": SolidRectangle,
             "SolidTriangle": SolidTriangle,
             "SolidPolygon": SolidPolygon
+        }
+        self.shape_weights: Dict[str, Any] = {
+            "Line": 1,
+            "SolidOval": 1.25,
+            "SolidRectangle": 1.75,
+            "SolidTriangle": 1.25,
+            "SolidPolygon": 2
         }
         # Add composite shape generator and include its shape class.
         self.composite_shape_gen = CompositeShapeGenerator(canvas=self.canvas)
@@ -56,6 +66,8 @@ class SceneGenerator:
         base_width, base_height = self.base_canvas
         expansion = 1
         self.scale = 1
+        self.scale_line_present: bool = False
+        self.scale_factor: float = 1.0
         self.canvas_width = int(base_width * expansion)
         self.canvas_height = int(base_height * expansion)
         self.canvas = (0, self.canvas_width, 0, self.canvas_height)
@@ -101,7 +113,7 @@ class SceneGenerator:
             params["width"] = random.uniform(10, int(self.canvas_width / 2.5))
             params["height"] = random.uniform(10, int(self.canvas_height / 2.5)) if not is_square else params["width"]
             params["thickness"] = random.uniform(1, 3)
-            params["is_square"] = is_square or (params["height"] == params["width"])
+            params["is_square"] = is_square or abs(params["height"] - params["width"]) < (2 * self.scale)
         elif shape_type == "SolidTriangle":
             params["vertices"] = [
                 (random.uniform(0, self.canvas_width), random.uniform(0, self.canvas_height))
@@ -201,11 +213,13 @@ class SceneGenerator:
             if random.random() < 0.15:
                 shape.set_label()
         except Exception as e:
+            print(e)
             UniqueIDGenerator.load_checkpoint()
             return None
         
         # Accept the shape only if it passes valid placement.
         if not self.is_valid_placement(shape, intersect_rules, position_rules, shape_amounts):
+            UniqueIDGenerator.load_checkpoint()
             return None
         self.shapes.append(shape)
         return shape
@@ -217,6 +231,7 @@ class SceneGenerator:
         """
         self.reset()
         # Add a random number of basic shapes.
+        
         num_basic_shapes = random.choices(range(1, self.global_max_shapes + 1), weights=[1 if i not in (3, 4) else 2 for i in range(1, self.global_max_shapes + 1)])[0]
         shape_types = list(self.shape_classes.keys())
         if random.random() < .075:
@@ -236,6 +251,7 @@ class SceneGenerator:
         
         basic_types = [st for st in shape_types if st != "CompositeShape"]
         for i in range(num_basic_shapes):
+            print(self.shapes, UniqueIDGenerator.counters)
             if i < self.get_total_number_of_shapes():
                 continue
             new_current_shapes = self.get_total_number_of_shapes()
@@ -244,6 +260,26 @@ class SceneGenerator:
         while len(self.shapes) < 1:
             st = random.choice(basic_types)
             self.add_shape_no_retry(st)
+        if random.random() < 0.99:
+            # Choose a random label between 1 and 50 and an actual length between 1/10 and 1/3 of the canvas width.
+            scale_label = random.randint(1, 50)
+            actual_length = random.uniform(self.canvas_width / 10, self.canvas_width / 3)
+            self.scale_factor = actual_length / scale_label
+            angle = random.uniform(0, 2 * math.pi)
+            dx, dy = actual_length * math.cos(angle), actual_length * math.sin(angle)
+            p1 = (random.uniform(max(0, -dx), min(self.canvas_width, self.canvas_width - dx)),
+                random.uniform(max(0, -dy), min(self.canvas_height, self.canvas_height - dy)))
+            p2 = (p1[0] + dx, p1[1] + dy)
+            scale_line = Line(p1=p1, p2=p2, thickness=2, canvas=self.canvas)
+            scale_line.set_label(str(scale_label))
+            # Mark this line as the scale indicator.
+            scale_line.is_scale_line = True
+            self.shapes.append(scale_line)
+            self.scale_line_present = True
+        else:
+            self.scale_line_present = False
+            self.scale_factor = 1.0
+
         
 
     def get_shapes_by_type(self) -> Dict[str, List[Any]]:
@@ -320,18 +356,33 @@ class SceneGenerator:
         except Exception:
             return False
 
-    def render(self, ax: Optional[Any]=None, figsize: Tuple[int, int]=(10, 8)) -> Tuple[Any, Any]:
-        """Render the scene to a matplotlib figure after verifying all shapes are within bounds."""
+    def render(self, ax: Optional[Any] = None, dpi: int = 100) -> Tuple[Any, Any]:
+        """
+        Render the scene to a matplotlib figure after verifying all shapes are within bounds.
+        The figure is created such that one coordinate unit approximately equals one pixel,
+        while the overall image size remains as intended.
+        """
         if not self.all_shapes_valid():
             raise ValueError("Not all shapes are within bounds before rendering.")
+        
+        # Create a figure sized exactly to the canvas dimensions (in inches) given the dpi.
         if ax is None:
-            fig, ax = plt.subplots(figsize=figsize)
+            fig_width = self.canvas_width / dpi
+            fig_height = self.canvas_height / dpi
+            fig = plt.figure(figsize=(fig_width, fig_height), dpi=dpi)
+            # Use an axes that spans the entire figure to match the canvas exactly.
+            ax = fig.add_axes([0, 0, 1, 1])
         else:
             fig = ax.figure
+        
+        # Set axes limits to match canvas dimensions.
         ax.set_xlim(0, self.canvas_width)
         ax.set_ylim(0, self.canvas_height)
+        
+        # Render each shape.
         for shape in self.shapes:
             shape.render(ax)
+        
         ax.axis('off')
         return fig, ax
     def get_flattened_shapes(self):
@@ -349,8 +400,19 @@ class SceneGenerator:
             flattened_shapes.extend(collect_children(shape))
         
         return flattened_shapes
-
-
+    
+    def _collect_flattened_shapes(self, shape: Any) -> List[Any]:
+        # Helper to recursively collect a flattened list of shapes from a single shape.
+        def collect_children(node):
+            children = node.get_children()
+            if not children:
+                return [node]
+            flattened = [node]
+            for child in children:
+                flattened.extend(collect_children(child))
+            return flattened
+        return collect_children(shape)
+    
     def get_skill_trace(self):
         """
         Generate a linear skill trace string for all shapes in the scene.
@@ -367,115 +429,99 @@ class SceneGenerator:
             followed by one line per shape showing the flattened object traces.
         """
         from collections import defaultdict
+        from shapes import scale_shape  # import the scaling function
+
+        # ---- Modified scaling for skill trace ----
+        use_scale = False
+        scale_info = ""
+        if self.scale_line_present:
+            use_scale = True
+            scale_factor = self.scale_factor
+            scale_info = f" I see a line labeled with a number that I assume is its length; using that as a context clue, I will assume everything in the image is at that scale, and scale by {scale_factor:.2f} from pixel space."
+            shapes_for_trace = []
+            for shape in self.shapes:
+                # Produce a scaled copy for skill trace only (rendering remains unchanged)
+                scaled_shape = scale_shape(shape, scale_factor)
+                shapes_for_trace.extend(self._collect_flattened_shapes(scaled_shape))
+        else:
+            scale_info = " I will use a pixel as a unit, which may not correspond to in-image measurements, and put the origin at the bottom-left corner. "
+            shapes_for_trace = self.get_flattened_shapes()
+        # ---- End modified scaling ----
 
         def flatten_and_merge(tree):
-            """
-            Recursively flatten the skill tree with children before parents, and merge details for nodes
-            with the same "object" field. Also, track if the node is a leaf (has no children).
-            
-            Returns:
-                A list of tuples in the order encountered:
-                    (object_id, object_type, merged_details, is_leaf)
-                where object_id is the full string from the "object" field,
-                object_type is the substring before '#' (if any),
-                merged_details is a concatenation of all details for that object,
-                and is_leaf is True if none of the occurrences had children.
-            """
-            merged = {}  # key: object id, value: [merged_details, is_leaf]
-            processed = set()  # track objects we've processed to avoid duplicates
-            
-            # First collect all object information
+            # merged: key -> object id, value is a tuple ([list of detail strings], is_leaf)
+            merged = {}
+            processed = set()
+
             def collect_info(node):
                 obj_id = node.get("object", "").strip()
                 detail = node.get("details", "")
-                has_children = "children" in node and node["children"]
-                
+                has_children = "children" in node and bool(node["children"])
+                # Extract detail text cleanly.
+                detail_text = ""
+                if isinstance(detail, str):
+                    detail_text = detail.strip()
+                elif isinstance(detail, list):
+                    detail_parts = [d.get("details", "").strip() for d in detail 
+                                    if isinstance(d, dict) and d.get("details", "").strip()]
+                    detail_text = "; ".join(detail_parts)
                 if obj_id:
                     if obj_id in merged:
-                        # If any occurrence has children, mark as non-leaf
                         merged[obj_id][1] = merged[obj_id][1] and (not has_children)
-                        # Merge detail if non-empty and not already included
-                        if detail and detail not in merged[obj_id][0]:
-                            merged[obj_id][0] += (", " if merged[obj_id][0] else "") + detail
+                        if detail_text and detail_text not in merged[obj_id][0]:
+                            merged[obj_id][0].append(detail_text)
                     else:
-                        merged[obj_id] = [detail, not has_children]
-                
-                # Process children
+                        merged[obj_id] = ([detail_text] if detail_text else [], not has_children)
                 if has_children:
                     for child in node["children"]:
                         collect_info(child)
-            
-            # Collect all object information first
             collect_info(tree)
-            
-            # Now build ordered list with children before parents
+
             def build_ordered_list(node):
                 result = []
                 obj_id = node.get("object", "").strip()
-                has_children = "children" in node and node["children"]
-                
-                # Process children first
+                has_children = "children" in node and bool(node["children"])
                 if has_children:
                     for child in node["children"]:
                         result.extend(build_ordered_list(child))
-                
-                # Then process this node if it has a valid object ID and hasn't been processed
                 if obj_id and obj_id not in processed:
                     obj_type = obj_id.split("#")[0]
-                    merged_details, is_leaf = merged[obj_id]
+                    detail_list, is_leaf = merged.get(obj_id, ([], True))
+                    merged_details = "; ".join([part for part in detail_list if part])
                     result.append((obj_id, obj_type, merged_details, is_leaf))
                     processed.add(obj_id)
-                
                 return result
-            
+
             return build_ordered_list(tree)
 
-        # Gather shapes in the order returned (regardless of type)
-        shapes = []
-        shapes_by_type = self.get_shapes_by_type()
-        for shape_list in shapes_by_type.values():
-            shapes.extend(shape_list)
+        global_indices = defaultdict(int)
+        total_counts = defaultdict(int)
+        shape_lines = []
+        seen_objects = set()
 
-        global_indices = defaultdict(int)  # for sequential numbering per object type
-        total_counts = defaultdict(int)    # count only leaf objects
-        shape_lines = []                  # to accumulate output lines per shape
-        seen_objects = set()              # track objects we've already seen across all shapes
-
-        for shape in shapes:
+        for shape in shapes_for_trace:
             tree = shape.perform_skills()
             flattened = flatten_and_merge(tree)
-            
-            # Build trace for this shape
             line_parts = []
             for obj_id, obj_type, details, is_leaf in flattened:
-                # Skip if we've already seen this object
                 if obj_id in seen_objects:
                     continue
                 seen_objects.add(obj_id)
-                
-                # Assign index and count leaf objects
                 idx = global_indices[obj_type]
                 global_indices[obj_type] += 1
                 if is_leaf:
                     total_counts[obj_type] += 1
-                
-                # Format the trace
                 part = f"{obj_id}: "
-                for d in details:
-                    if "details" in d:
-                        det = d["details"]
-                        part += det
-                    else:
-                        continue
+                if isinstance(details, str):
+                    part += details
+                else:
+                    part += details
                 line_parts.append(part)
-            
-            # Add this shape's trace to output
             if line_parts:
                 shape_lines.append(" | ".join(line_parts))
 
-        # Build header from leaf counts only, with simple pluralization.
         leaf_counts = defaultdict(int)
-        for shape in shapes:
+        for shape in shapes_for_trace:
             if not shape.get_children():
                 shape_type = shape.ALIAS
                 leaf_counts[shape_type] += 1
@@ -483,14 +529,11 @@ class SceneGenerator:
         for shape_type, count in leaf_counts.items():
             leaf_parts.append(f"{count} {shape_type.lower()}{'s' if count != 1 else ''}")
         leaf_sentence = "There are approximately " + " and ".join(leaf_parts) + "."
-
-    
         composite_aliases = []
-        for shape in shapes:
+        for shape in shapes_for_trace:
             if getattr(shape, "is_composite", False):
                 alias = getattr(shape, "ALIAS", None)
                 composite_aliases.append(alias)
-        # Remove duplicates
         composite_aliases = list(set(composite_aliases))
         if composite_aliases:
             if len(composite_aliases) == 1:
@@ -499,24 +542,36 @@ class SceneGenerator:
                 composite_sentence = f" I see repeated complex objects in the image; I will call them {' and '.join(composite_aliases)}."
         else:
             composite_sentence = ""
-        header = leaf_sentence + composite_sentence + " I will use a pixel as a unit, which may not correspond to in-image measurements, and put the origin at the bottom-left corner. "
+        header = leaf_sentence + composite_sentence + scale_info
 
         return header + "\n" + " ".join(shape_lines)
 
-    def save_to_json(self, filename: str, question: str, answer: str, path: str) -> Dict[str, Any]:
+    
+    
+    def save_to_json(self, filename: str, question: str, answer: str, path: str, alpaca_output: bool = False) -> Dict[str, Any]:
         """
         Save the scene, question, and answer to a JSON file in single-line JSON format.
         Also, save the image immediately.
+        
+        If alpaca_output is True, use a different assistant output format.
         """
         scene_id = str(uuid.uuid4().hex)
         image_path = f"{path}/scene_{scene_id}.png"
         if not self.all_shapes_valid():
             raise ValueError("Final scene contains shapes out of bounds.")
         skill_trace = self.get_skill_trace()
-        assistant_response = (
-            f"The scene contains 2D shapes or geometry. Before I answer, let me parse them: {skill_trace}\n"
-            f"I will now use that information and return to the original question: '{question}' - the answer is {answer}."
-        )
+        if alpaca_output:
+            # Example Alpaca-style output formatting.
+            assistant_response = (
+                f"Question: {question}\n"
+                f"Answer: {answer}\n"
+                f"Skill Trace:\n{skill_trace}"
+            )
+        else:
+            assistant_response = (
+                f"The scene contains 2D shapes or geometry. Before I answer, let me parse them: {skill_trace}\n"
+                f"I will now use that information and return to the original question: '{question}' - the answer is {answer}."
+            )
         json_entry = {
             "messages": [
                 {"role": "user", "content": question},
@@ -531,6 +586,9 @@ class SceneGenerator:
         fig.savefig(image_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         return json_entry
+
+    
+    
     def generate_question_and_answer(self) -> Tuple[str, str, List[str]]:
         """
         Generate a random question and its answer based on the current scene.
@@ -563,7 +621,7 @@ class SceneGenerator:
             return question_text, answer, shapes_involved
 
 
-        elif chosen == "intersection":
+        elif chosen == "intersection" or True:
             # 90% chance to use objects from the scene if at least two different types exist.
             if random.random() < 0.9 and len(list(shapes_by_type.keys())) >= 2:
                 shape1 = random.choice(list(shapes_by_type.keys()))
@@ -594,7 +652,7 @@ class SceneGenerator:
             else:
                 answer = f"there is no such {replace_polygon(shape1.replace('Solid', ''))} overlapping with a {replace_polygon(shape2.replace('Solid', ''))} in this image. So, no"
                 shapes_involved = []
-            question_text = f"Does a {replace_polygon(shape1.replace('Solid',''))} intersect with a {replace_polygon(shape2.replace('Solid',''))} in this image?"
+            question_text = f"Does a {replace_polygon(shape1.replace('Solid',''))} intersect with a {replace_polygon(shape2.replace('Solid',''))} in this image? Do not count parts of objects intersecting with themselves."
             return question_text, answer, shapes_involved
 
 
@@ -617,7 +675,7 @@ class SceneGenerator:
                             pair = frozenset({s1.get_identifier(), s2.get_identifier()})
                             intersection_pairs.add(pair)
             count = len(intersection_pairs)
-            question_text = f"How many {shape1}s intersect with {shape2}s in this image?"
+            question_text = f"How many {shape1}s intersect with {shape2}s in this image? Do not count parts of objects intersecting with themselves."
             shapes_involved = []  # Optionally, you could list some of the identifiers from the pairs.
             return question_text, str(count), shapes_involved
 
@@ -770,12 +828,14 @@ def generate_dataset(output_file: str="scene_dataset7.json", num_examples: int=5
     
     with open(output_file, 'w') as f_out:
         for _ in range(num_examples):
+            generator = SceneGenerator()
             generator.generate_random_scene()
             question, answer, shapes = generator.generate_question_and_answer()
             temp_file = f"temp_scene_{uuid.uuid4().hex}.json"
             try:
                 json_entry = generator.save_to_json(temp_file, question, answer, output_image_path)
-            except Exception:
+            except Exception as e:
+                print(e)
                 continue
             if os.path.exists(temp_file):
                 os.remove(temp_file)
@@ -789,16 +849,10 @@ def generate_dataset(output_file: str="scene_dataset7.json", num_examples: int=5
 if __name__ == "__main__":
     generator = SceneGenerator()
     
-    # Generate a random scene (no retries) and then generate a random question & answer from it.
-    generator.generate_random_scene()
-    question, answer, shapes = generator.generate_question_and_answer()
-    print(f"Question: {question}")
-    print(f"Answer: {answer}")
-    
     try:
         fig, ax = generator.render()
         plt.show()
     except Exception as e:
         print("Rendering failed:", e)
     
-    generate_dataset(num_examples=305, output_image_path="/n/fs/penciller/skilltree2/geometry/output-tests")
+    generate_dataset(num_examples=1, output_image_path="/n/fs/penciller/skilltree2/geometry/output-tests")

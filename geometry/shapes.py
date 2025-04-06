@@ -136,7 +136,7 @@ def scale_shape(shape, scale_factor):
             label=shape.label
         )
     
-    elif hasattr(shape, 'ALIAS') and 'Geo' in shape.ALIAS or 'Shapey' in shape.ALIAS:  # CompositeShape case
+    elif isinstance(shape, CompositeShape):  # CompositeShape case
         center = tuple(coord / scale_factor for coord in shape.center) if shape.center else None
         # For composite shapes, we adjust the internal scale parameter
         new_scale = shape.scale / scale_factor
@@ -211,8 +211,13 @@ class Line(PlotObject):
             mid_y = (self.p1[1] + self.p2[1]) / 2
             # Use a small offset perpendicular to the line
             length, angle = get_line_length_and_angle(self.p1, self.p2)
-            perp_angle = angle + 90
-            offset = 10  # pixels
+            
+            # Add randomness to the angle (±20 degrees from perpendicular)
+            perp_angle = angle + 90 + random.uniform(-20, 20)
+            
+            # Random offset between 7 and 15 pixels
+            offset = random.uniform(7, 15)
+            
             label_x = mid_x + offset * math.cos(math.radians(perp_angle))
             label_y = mid_y + offset * math.sin(math.radians(perp_angle))
             ax.text(label_x, label_y, self.label, ha='center', va='center')
@@ -257,7 +262,7 @@ class Line(PlotObject):
             "action": "RecognizeInstanceLine",
             "object": f"Line#{self.obj_id}" if not self.label else f"Line#{self.obj_id} labeled as {self.label}",
             "details": [
-                {"action": "LocalizeLine", "object": f"Line#{self.obj_id}", "details": f"(Endpoints: {e1}, {e2}{label_info},"},
+                {"action": "LocalizeLine", "object": f"Line#{self.obj_id}", "details": f"(Endpoints: {e1}, {e2} {label_info}"},
                 {"action": "MeasureLine", "object": f"Line#{self.obj_id}", "details": f" Length:{length}, Angle:{angle}, Color: {self.color})"}
             ]
         }
@@ -460,9 +465,10 @@ class SolidRectangle(PlotObject):
         if self.is_square or self.width == self.height:
             self.mask_alias = "Square"
         self.enforce_bounds()
-        self.lock_geometry()
-    def create_children(self):
         if not self._geometry_locked:
+            self.lock_geometry()
+    def create_children(self):
+        if not self._geometry_locked or self.children: # don't double create
             return
         self.children = None
         # Create child line objects for each edge if border and fill colors differ.
@@ -488,9 +494,8 @@ class SolidRectangle(PlotObject):
                         facecolor=self.fill_color,
                         lw=self.thickness)
         import matplotlib.transforms as transforms
-        # Create a transform that first translates to center position
-        # Then rotates around that center point
-        t = transforms.Affine2D().translate(self.center[0], self.center[1]).rotate_deg_around(self.center[0], self.center[1], self.angle) + ax.transData
+        # Rotate about the rectangle's center (0, 0) then translate to the desired center position.
+        t = transforms.Affine2D().rotate_deg(self.angle).translate(self.center[0], self.center[1]) + ax.transData
         rect.set_transform(t)
         ax.add_patch(rect)
             
@@ -702,7 +707,7 @@ class SolidTriangle(PlotObject):
         b3 = sign(pt, v3, v1) < 0.0
         return ((b1 == b2) and (b2 == b3))
     def create_children(self):
-        if not self._geometry_locked:
+        if not self._geometry_locked or self.children:
             return
         self.children = None
         if self.border_color != self.fill_color: 
@@ -718,7 +723,7 @@ class SolidTriangle(PlotObject):
         
     def perform_skills(self, verbose=False):
         if not self._geometry_locked:
-            raise AssertionError("Geoemetry was not assigned and tried to print skills.")
+            raise AssertionError("Geometry was not assigned and tried to print skills.")
         children_trees = []
         line_ids = []
 
@@ -744,7 +749,7 @@ class SolidTriangle(PlotObject):
             "object": f"Triangle#{self.obj_id}" if not self.label else f"Triangle#{self.obj_id} labeled as {self.label}",
             "details": [
                 {"action": "RecognizeInstanceTriangle", "object": f"Triangle#{self.obj_id}"},
-                {"action": "LocalizeTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}),"  + f"from lines with IDs = {line_ids}," if line_ids else ""},
+                {"action": "LocalizeTriangle", "object": f"Triangle#{self.obj_id}", "details": f"(Vertices: {rounded_vertices}),"  + f"from lines with IDs = {line_ids}" if line_ids else ""},
                 {"action": "MeasureTriangle", "object": f"Triangle#{self.obj_id}", "details": f" Area: {rounded_area}, {color})"}
             ],
             "children": children_trees
@@ -779,8 +784,6 @@ class SolidPolygon(PlotObject):
         else:
             self.vertices = vertices
             self.lock_geometry()
-            self.create_children()
-
     def _generate_random_convex_polygon(self):
         xmin, xmax, ymin, ymax = self.canvas
         pts = [(random.uniform(xmin, xmax), random.uniform(ymin, ymax))
@@ -800,7 +803,7 @@ class SolidPolygon(PlotObject):
     def create_children(self):
         """Create child line objects along the polygon’s edges if the border
         and fill colors differ. This function is called once the geometry is locked."""
-        if not self._geometry_locked:
+        if not self._geometry_locked or self.children:
             return
         self.children = None
         if self.border_color != self.fill_color:
@@ -1268,7 +1271,7 @@ class CompositeShapeGenerator:
                         self.lock_geometry()  # Now uses the base class method which calls create_children.
             def create_children(self):
                 """Store component objects as children."""
-                if not self._geometry_locked:
+                if not self._geometry_locked or self.children:
                     return
                 self.children = []
                 for comp in self.components:
