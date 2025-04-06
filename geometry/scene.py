@@ -548,7 +548,7 @@ class SceneGenerator:
 
     
     
-    def save_to_json(self, filename: str, question: str, answer: str, path: str, old_output: bool = False) -> dict:
+    def save_to_json(self, filename: str, question: str, answer: str, path: str, old_output: bool = True) -> dict:
         """
         Append a single example to a JSONL-style file, where each line is a JSON object
         followed by a comma. Assumes caller will wrap with [ ] if needed.
@@ -645,7 +645,7 @@ class SceneGenerator:
             return question_text, answer, shapes_involved
 
 
-        elif chosen == "intersection" or True:
+        elif chosen == "intersection":
             # 90% chance to use objects from the scene if at least two different types exist.
             if random.random() < 0.9 and len(list(shapes_by_type.keys())) >= 2:
                 shape1 = random.choice(list(shapes_by_type.keys()))
@@ -842,7 +842,7 @@ class SceneGenerator:
         label_desc = (" labeled as "  + label + " ") if label else ""
         description = f"{color_desc}{shape_name}{label_desc}"
         return description
-def generate_dataset(output_file: str="scene_dataset7.json", num_examples: int=50, output_image_path: str="output") -> None:
+def generate_dataset(output_file: str="scene_dataset2.json", num_examples: int=50, output_image_path: str="output") -> None:
     """
     Generate a dataset of scenes and questions.
     Each entry is output in a single-line JSON format.
@@ -879,4 +879,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("Rendering failed:", e)
     
-    generate_dataset(num_examples=3, output_image_path="/n/fs/penciller/skilltree2/geometry/output-tests")
+    generate_dataset(num_examples=50000, output_image_path="/n/fs/penciller/skilltree2/geometry/output-job")
