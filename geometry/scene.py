@@ -546,11 +546,20 @@ class SceneGenerator:
 
         return header + "\n" + " ".join(shape_lines)
 
-    
-    def save_to_json(self, filename: str, question: str, answer: str, path: str, old_output: bool = False) -> dict:
+    def save_to_json(self, filename: str, question: str, answer: str, path: str, old_output: bool = True, 
+                 include_shapes: bool = False, shape_ids: List[str] = None) -> dict:
         """
         Create a JSON object for a single example and save the associated image.
         Returns the JSON entry without writing to file.
+        
+        Parameters:
+            filename: Output filename (not used in this version)
+            question: The question text
+            answer: The answer text
+            path: Path to save the image
+            old_output: Whether to use old output format
+            include_shapes: Whether to include shape identifiers in the output
+            shape_ids: List of shape identifiers (strings) to include when include_shapes=True
         """
         # Generate a unique image path
         scene_id = uuid.uuid4().hex
@@ -592,6 +601,10 @@ class SceneGenerator:
                     }
                 ]
             }
+        
+        # Add shape IDs if requested, regardless of output format
+        if include_shapes:
+            json_entry["shape_ids"] = shape_ids if shape_ids is not None else []
 
         # Ensure directory exists and save image
         os.makedirs(os.path.dirname(image_path), exist_ok=True)
@@ -600,6 +613,7 @@ class SceneGenerator:
         plt.close(fig)
 
         return json_entry
+
     
     def generate_question_and_answer(self) -> Tuple[str, str, List[str]]:
         """
@@ -830,10 +844,17 @@ class SceneGenerator:
         label_desc = (" labeled as "  + label + " ") if label else ""
         description = f"{color_desc}{shape_name}{label_desc}"
         return description
-def generate_dataset(output_file: str="scene_dataset3.json", num_examples: int=50, output_image_path: str="output") -> None:
+def generate_dataset(output_file: str="scene_dataset2.json", num_examples: int=50, 
+                    output_image_path: str="output", include_shapes: bool = False) -> None:
     """
     Generate a dataset of scenes and questions.
     Outputs a properly formatted JSON array.
+    
+    Parameters:
+        output_file: Path to output JSON file
+        num_examples: Number of examples to generate
+        output_image_path: Path to save generated images
+        include_shapes: Whether to include shape identifiers in the output
     """
     generator = SceneGenerator()
     generated_count = 0
@@ -847,7 +868,10 @@ def generate_dataset(output_file: str="scene_dataset3.json", num_examples: int=5
                 generator.generate_random_scene()
                 question, answer, shapes = generator.generate_question_and_answer()
                 
-                json_entry = generator.save_to_json("", question, answer, output_image_path)
+                json_entry = generator.save_to_json(
+                    "", question, answer, output_image_path, 
+                    include_shapes=include_shapes, shape_ids=shapes
+                )
                 
                 # Add comma if this isn't the first entry
                 if generated_count > 0:
