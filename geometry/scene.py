@@ -547,13 +547,11 @@ class SceneGenerator:
         return header + "\n" + " ".join(shape_lines)
 
     
-    
-    def save_to_json(self, filename: str, question: str, answer: str, path: str, old_output: bool = True) -> dict:
+    def save_to_json(self, filename: str, question: str, answer: str, path: str, old_output: bool = False) -> dict:
         """
-        Append a single example to a JSONL-style file, where each line is a JSON object
-        followed by a comma. Assumes caller will wrap with [ ] if needed.
+        Create a JSON object for a single example and save the associated image.
+        Returns the JSON entry without writing to file.
         """
-
         # Generate a unique image path
         scene_id = uuid.uuid4().hex
         image_path = os.path.join(path, f"scene_{scene_id}.png")
@@ -582,10 +580,6 @@ class SceneGenerator:
             json_entry = {
                 "messages": [
                     {
-                        "role": "system",
-                        "content": [{"type": "text", "text": "You are a helpful assistant."}]
-                    },
-                    {
                         "role": "user",
                         "content": [
                             {"type": "image", "path": image_path},
@@ -605,13 +599,7 @@ class SceneGenerator:
         fig.savefig(image_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
 
-        # Append the JSON entry + comma to file
-        with open(filename, 'a') as f:
-            json.dump(json_entry, f, indent=2)
-            f.write(',\n')  # always add comma + newline
-
         return json_entry
-    
     
     def generate_question_and_answer(self) -> Tuple[str, str, List[str]]:
         """
@@ -842,32 +830,42 @@ class SceneGenerator:
         label_desc = (" labeled as "  + label + " ") if label else ""
         description = f"{color_desc}{shape_name}{label_desc}"
         return description
-def generate_dataset(output_file: str="scene_dataset2.json", num_examples: int=50, output_image_path: str="output") -> None:
+def generate_dataset(output_file: str="scene_dataset3.json", num_examples: int=50, output_image_path: str="output") -> None:
     """
     Generate a dataset of scenes and questions.
-    Each entry is output in a single-line JSON format.
-    This function generates each scene once without retries.
+    Outputs a properly formatted JSON array.
     """
     generator = SceneGenerator()
+    generated_count = 0
     
     with open(output_file, 'w') as f_out:
-        for _ in range(num_examples):
-            generator = SceneGenerator()
-            generator.generate_random_scene()
-            question, answer, shapes = generator.generate_question_and_answer()
-            temp_file = f"temp_scene_{uuid.uuid4().hex}.json"
+        f_out.write('[\n')  # Start JSON array
+        
+        for i in range(num_examples):
             try:
-                json_entry = generator.save_to_json(temp_file, question, answer, output_image_path)
+                generator = SceneGenerator()
+                generator.generate_random_scene()
+                question, answer, shapes = generator.generate_question_and_answer()
+                
+                json_entry = generator.save_to_json("", question, answer, output_image_path)
+                
+                # Add comma if this isn't the first entry
+                if generated_count > 0:
+                    f_out.write(',\n')
+                
+                json_string = json.dumps(json_entry)
+                f_out.write(json_string)
+                generated_count += 1
+                
+                if (i + 1) % 100 == 0:
+                    print(f"Generated {i+1}/{num_examples} examples")
             except Exception as e:
-                print(e)
+                print(f"Error generating example {i+1}: {e}")
                 continue
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-            json_line = json.dumps(json_entry, separators=(',',':'))
-            print(json_line)
-            f_out.write(json_line + ",\n")
+        
+        f_out.write('\n]\n')  # End JSON array
     
-    print(f"Generated {num_examples} examples and saved to {output_file}")
+    print(f"Generated {generated_count} examples and saved to {output_file}")
     print("Failure counts per question type:", generator.fail_counts)
 
 if __name__ == "__main__":
@@ -879,4 +877,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("Rendering failed:", e)
     
-    generate_dataset(num_examples=50000, output_image_path="/n/fs/penciller/skilltree2/geometry/output-job")
+    generate_dataset(num_examples=50, output_image_path="/n/fs/penciller/skilltree2/geometry/output-job-test")
